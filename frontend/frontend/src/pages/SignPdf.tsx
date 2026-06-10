@@ -1,0 +1,262 @@
+import React, { useState, useRef } from 'react';
+import { ArrowLeft, Stamp, Download, FileCheck } from 'lucide-react';
+import FileUpload from '../components/FileUpload';
+import ProgressBar from '../components/ProgressBar';
+import api from '../utils/api';
+
+interface SignPdfProps {
+  onBack: () => void;
+}
+
+const SignPdf: React.FC<SignPdfProps> = ({ onBack }) => {
+  const [files, setFiles] = useState<File[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+
+  // Signature Pad State
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [color, setColor] = useState('#000000');
+  const [lineWidth] = useState(3);
+  const [signatureData, setSignatureData] = useState<string | null>(null);
+
+  // Position Parameters
+  const [pageIndex, setPageIndex] = useState(0);
+  const [xPos, setXPos] = useState(50);
+  const [yPos, setYPos] = useState(50);
+  const [width, setWidth] = useState(150);
+  const [height, setHeight] = useState(75);
+
+  const handleFilesSelected = (newFiles: File[]) => {
+    if (newFiles.length > 0) {
+      setFiles([newFiles[0]]);
+      setDownloadUrl(null);
+    }
+  };
+
+  const handleRemoveFile = () => {
+    setFiles([]);
+    setDownloadUrl(null);
+  };
+
+  // Canvas drawing handlers
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.beginPath();
+    const rect = canvas.getBoundingClientRect();
+    let clientX = 0;
+    let clientY = 0;
+
+    if ('touches' in e) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+
+    ctx.moveTo(clientX - rect.left, clientY - rect.top);
+    setIsDrawing(true);
+  };
+
+  const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    if (!isDrawing) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const rect = canvas.getBoundingClientRect();
+    let clientX = 0;
+    let clientY = 0;
+
+    if ('touches' in e) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+
+    ctx.lineTo(clientX - rect.left, clientY - rect.top);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  };
+
+  const stopDrawing = () => {
+    setIsDrawing(false);
+    saveSignatureImage();
+  };
+
+  const clearCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setSignatureData(null);
+  };
+
+  const saveSignatureImage = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dataUrl = canvas.toDataURL('image/png');
+    setSignatureData(dataUrl);
+  };
+
+  const handleSubmit = async () => {
+    if (files.length === 0) {
+      alert('Please upload a PDF file.');
+      return;
+    }
+    if (!signatureData) {
+      alert('Please draw a signature first.');
+      return;
+    }
+
+    setIsProcessing(true);
+    setProgress(20);
+
+    const formData = new FormData();
+    formData.append('file', files[0]);
+    formData.append('signatureData', signatureData);
+    formData.append('pageIndex', String(pageIndex));
+    formData.append('x', String(xPos));
+    formData.append('y', String(yPos));
+    formData.append('width', String(width));
+    formData.append('height', String(height));
+
+    try {
+      setProgress(50);
+      const response = await api.post('/sign', formData, {
+        responseType: 'blob',
+        onUploadProgress: (progressEvent) => {
+          const percent = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
+          setProgress(50 + percent * 0.4);
+        }
+      });
+
+      setProgress(90);
+      const blob = new Blob([response.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      setDownloadUrl(url);
+      setProgress(100);
+    } catch (err: any) {
+      console.error(err);
+      alert('Error signing PDF: ' + (err.response?.data?.error || err.message));
+      setProgress(0);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  return (
+    <div className="tool-page-container">
+      <div className="tool-workspace">
+        <button className="file-remove-btn" style={{ top: '1.5rem', left: '1.5rem', width: 'auto', height: 'auto', borderRadius: '8px', padding: '0.4rem 0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }} onClick={onBack}>
+          <ArrowLeft size={16} /> Back to Tools
+        </button>
+
+        <div style={{ width: '100%', marginTop: '3rem', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <h2 style={{ fontSize: '1.75rem', marginBottom: '1.5rem', fontFamily: 'var(--font-display)' }}>Sign PDF Document</h2>
+
+          {!downloadUrl ? (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.5rem', width: '100%', maxWidth: '600px' }}>
+              <FileUpload
+                accept="application/pdf"
+                multiple={false}
+                onFilesSelected={handleFilesSelected}
+                selectedFiles={files}
+                onRemoveFile={handleRemoveFile}
+              />
+
+              <div style={{ width: '100%', border: '1px solid var(--border-color)', borderRadius: '12px', background: 'rgba(255,255,255,0.05)', padding: '1.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem' }}>Draw Your Signature</h3>
+                
+                <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+                  <button onClick={() => setColor('#000000')} style={{ width: '24px', height: '24px', borderRadius: '50%', background: '#000000', border: color === '#000000' ? '2px solid white' : 'none', cursor: 'pointer' }} />
+                  <button onClick={() => setColor('#0000ff')} style={{ width: '24px', height: '24px', borderRadius: '50%', background: '#0000ff', border: color === '#0000ff' ? '2px solid white' : 'none', cursor: 'pointer' }} />
+                  <button onClick={() => setColor('#ff0000')} style={{ width: '24px', height: '24px', borderRadius: '50%', background: '#ff0000', border: color === '#ff0000' ? '2px solid white' : 'none', cursor: 'pointer' }} />
+                  <button onClick={clearCanvas} className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '0.8rem', background: '#555', color: '#fff' }}>Clear Canvas</button>
+                </div>
+
+                <canvas
+                  ref={canvasRef}
+                  width={400}
+                  height={150}
+                  style={{ background: 'white', borderRadius: '8px', cursor: 'crosshair', border: '2px solid var(--border-color)' }}
+                  onMouseDown={startDrawing}
+                  onMouseMove={draw}
+                  onMouseUp={stopDrawing}
+                  onMouseLeave={stopDrawing}
+                  onTouchStart={startDrawing}
+                  onTouchMove={draw}
+                  onTouchEnd={stopDrawing}
+                />
+              </div>
+            </div>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '2rem' }}>
+              <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#e2f0d9', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem', color: '#385723' }}>
+                <FileCheck size={36} />
+              </div>
+              <h3 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>PDF Signed Successfully!</h3>
+              <a href={downloadUrl} download="signed.pdf" className="btn btn-primary" style={{ textDecoration: 'none' }}>
+                <Download size={18} /> Download Signed PDF
+              </a>
+            </div>
+          )}
+
+          {isProcessing && (
+            <ProgressBar progress={progress} message="Stamping signature onto PDF pages..." />
+          )}
+        </div>
+      </div>
+
+      <div className="tool-options-panel">
+        <h3 className="panel-title">Signature Placement</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
+          <div>
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Target Page (0-indexed)</label>
+            <input type="number" className="form-control" value={pageIndex} onChange={(e) => setPageIndex(Number(e.target.value))} style={{ width: '100%' }} />
+          </div>
+          <div>
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>X Position</label>
+            <input type="number" className="form-control" value={xPos} onChange={(e) => setXPos(Number(e.target.value))} style={{ width: '100%' }} />
+          </div>
+          <div>
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Y Position</label>
+            <input type="number" className="form-control" value={yPos} onChange={(e) => setYPos(Number(e.target.value))} style={{ width: '100%' }} />
+          </div>
+          <div>
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Stamp Width</label>
+            <input type="number" className="form-control" value={width} onChange={(e) => setWidth(Number(e.target.value))} style={{ width: '100%' }} />
+          </div>
+          <div>
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Stamp Height</label>
+            <input type="number" className="form-control" value={height} onChange={(e) => setHeight(Number(e.target.value))} style={{ width: '100%' }} />
+          </div>
+        </div>
+
+        <button 
+          className="btn btn-primary"
+          disabled={files.length === 0 || !signatureData || isProcessing}
+          onClick={handleSubmit}
+          style={{ width: '100%', marginTop: '1.5rem' }}
+        >
+          <Stamp size={18} /> Sign Document
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default SignPdf;
