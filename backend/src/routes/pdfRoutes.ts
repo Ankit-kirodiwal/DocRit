@@ -41,5 +41,12 @@ router.post('/pdf-to-word', upload.single('file'), pdfController.pdfToWord);
 router.post('/pdf-to-powerpoint', upload.single('file'), pdfController.pdfToPowerpoint);
 router.post('/pdf-to-excel', upload.single('file'), pdfController.pdfToExcel);
 router.post('/ocr', upload.single('file'), pdfController.ocrPDF);
+router.post('/detect-forms', upload.single('file'), pdfController.detectForms);
+router.post('/save-forms', upload.single('file'), pdfController.saveForms);
+router.post('/batch-fill-forms', upload.fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'dataFile', maxCount: 1 }
+]), pdfController.batchFillForms);
+router.post('/parse-headers', upload.single('file'), pdfController.parseHeaders);
 
 export default router;

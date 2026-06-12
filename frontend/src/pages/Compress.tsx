@@ -2,14 +2,7 @@ import React, { useState } from 'react';
 import { ArrowLeft, FileArchive, Download } from 'lucide-react';
 import FileUpload from '../components/FileUpload';
 import ProgressBar from '../components/ProgressBar';
-import * as pdfjsLib from 'pdfjs-dist';
-import { PDFDocument } from 'pdf-lib';
-
-// Configure worker for offline PDF page rendering
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url
-).toString();
+import api from '../utils/api';
 
 interface CompressProps {
   onBack: () => void;
@@ -23,7 +16,9 @@ const Compress: React.FC<CompressProps> = ({ onBack }) => {
   
   const [originalSize, setOriginalSize] = useState<number | null>(null);
   const [compressedSize, setCompressedSize] = useState<number | null>(null);
-  const [compressionLevel, setCompressionLevel] = useState<'extreme' | 'recommended' | 'low'>('recommended');
+  const [compressionLevel, setCompressionLevel] = useState<'extreme' | 'recommended' | 'low' | 'custom'>('recommended');
+  const [customDpi, setCustomDpi] = useState<number>(150);
+  const [customQuality, setCustomQuality] = useState<number>(70);
 
   const handleFilesSelected = (newFiles: File[]) => {
     if (newFiles.length > 0) {
@@ -44,131 +39,54 @@ const Compress: React.FC<CompressProps> = ({ onBack }) => {
   const handleSubmit = async () => {
     if (files.length === 0) return;
     setIsProcessing(true);
-    setProgress(5);
+    setProgress(15);
     setDownloadUrl(null);
     setOriginalSize(files[0].size);
     setCompressedSize(null);
 
+    const formData = new FormData();
+    formData.append('file', files[0]);
+    formData.append('level', compressionLevel === 'recommended' ? 'medium' : compressionLevel);
+    if (compressionLevel === 'custom') {
+      formData.append('dpi', customDpi.toString());
+      formData.append('quality', customQuality.toString());
+    }
+
     try {
-      const file = files[0];
-      const arrayBuffer = await file.arrayBuffer();
-      const typedarray = new Uint8Array(arrayBuffer);
-      
-      setProgress(15);
-      const loadingTask = pdfjsLib.getDocument({ data: typedarray });
-      const pdf = await loadingTask.promise;
-      const totalPages = pdf.numPages;
-      
-      const compressedPdf = await PDFDocument.create();
-      
-      // Load source PDF once for copying pages
-      const freshBufferForCopy = await file.arrayBuffer();
-      const srcDoc = await PDFDocument.load(new Uint8Array(freshBufferForCopy));
-      
-      // Determine scale and quality based on selection
-      let scale = 0.75;
-      let quality = 0.5;
-      if (compressionLevel === 'extreme') {
-        scale = 0.6;
-        quality = 0.35;
-      } else if (compressionLevel === 'low') {
-        scale = 0.95;
-        quality = 0.75;
-      }
-
-      const ops = (pdfjsLib as any).OPS || {};
-
-      for (let i = 1; i <= totalPages; i++) {
-        setProgress(15 + Math.round((i / totalPages) * 70)); // scale from 15% to 85% progress
-        
-        const page = await pdf.getPage(i);
-        
-        // Check if page contains images
-        const operatorList = await page.getOperatorList();
-        let hasImage = false;
-        for (let j = 0; j < operatorList.fnArray.length; j++) {
-          const fn = operatorList.fnArray[j];
-          if (
-            fn === ops.paintImageXObject || 
-            fn === ops.paintInlineImageXObject ||
-            fn === ops.paintImageMaskXObject
-          ) {
-            hasImage = true;
-            break;
-          }
+      setProgress(40);
+      const response = await api.post('/compress', formData, {
+        responseType: 'blob',
+        onUploadProgress: (progressEvent) => {
+          const percent = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
+          setProgress(40 + percent * 0.4);
         }
-
-        if (hasImage) {
-          const viewport = page.getViewport({ scale });
-          const canvas = document.createElement('canvas');
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-          const context = canvas.getContext('2d');
-          
-          if (context) {
-            await page.render({
-              canvasContext: context,
-              viewport: viewport
-            }).promise;
-            
-            const jpegDataUrl = canvas.toDataURL('image/jpeg', quality);
-            const imageResponse = await fetch(jpegDataUrl);
-            const blob = await imageResponse.blob();
-            const imgBytes = await blob.arrayBuffer();
-            
-            const embeddedImg = await compressedPdf.embedJpg(imgBytes);
-            const newPage = compressedPdf.addPage([embeddedImg.width, embeddedImg.height]);
-            newPage.drawImage(embeddedImg, {
-              x: 0,
-              y: 0,
-              width: embeddedImg.width,
-              height: embeddedImg.height
-            });
-          }
-        } else {
-          // Lossless copy of vector page
-          const copiedPages = await compressedPdf.copyPages(srcDoc, [i - 1]);
-          compressedPdf.addPage(copiedPages[0]);
-        }
+      });
+      
+      setProgress(85);
+      
+      const origHeader = response.headers['x-original-size'];
+      const compHeader = response.headers['x-compressed-size'];
+      
+      if (origHeader) {
+        setOriginalSize(parseInt(origHeader, 10));
+      } else {
+        setOriginalSize(files[0].size);
       }
       
-      setProgress(90);
-      let compressedBytes = await compressedPdf.save({ useObjectStreams: true });
+      const blob = new Blob([response.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
       
-      let finalBytes = compressedBytes;
-      let finalSize = compressedBytes.length;
-      
-      // Fallback: If rasterized size is larger than or equal to the original size,
-      // perform structural compression (lossless) on the original document to guarantee it's not larger!
-      if (finalSize >= file.size) {
-        console.log('Rasterized size is larger than original. Trying structural optimization.');
-        // Load a fresh ArrayBuffer to prevent detached ArrayBuffer exceptions
-        const freshBuffer = await file.arrayBuffer();
-        const originalDoc = await PDFDocument.load(new Uint8Array(freshBuffer));
-        const structuralBytes = await originalDoc.save({ useObjectStreams: true });
-        
-        if (structuralBytes.length < file.size) {
-          finalSize = structuralBytes.length;
-          finalBytes = structuralBytes;
-          console.log('Structural optimization succeeded. Size:', finalSize);
-        } else {
-          // If even structural compression doesn't reduce size (already optimized),
-          // we fall back to using the original raw file (0% compression, but 100% quality, no file size increase!).
-          finalSize = file.size;
-          const originalFreshBuffer = await file.arrayBuffer();
-          finalBytes = new Uint8Array(originalFreshBuffer);
-          console.log('Using original file as fallback to prevent size increase.');
-        }
+      if (compHeader) {
+        setCompressedSize(parseInt(compHeader, 10));
+      } else {
+        setCompressedSize(blob.size);
       }
       
-      const compressedBlob = new Blob([finalBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-      setCompressedSize(finalSize);
-      const url = window.URL.createObjectURL(compressedBlob);
       setDownloadUrl(url);
       setProgress(100);
     } catch (err: any) {
       console.error(err);
-      alert('Error compressing PDF: ' + err.message);
+      alert('Error compressing PDF: ' + (err.response?.data?.error || err.message));
       setProgress(0);
     } finally {
       setIsProcessing(false);
@@ -247,10 +165,10 @@ const Compress: React.FC<CompressProps> = ({ onBack }) => {
                     display: 'inline-flex', 
                     alignItems: 'center', 
                     gap: '0.6rem',
-                    backgroundColor: 'var(--color-coral)',
+                    backgroundColor: 'var(--color-green)',
                     color: '#ffffff',
                     border: 'none',
-                    boxShadow: '0 4px 15px rgba(238, 108, 77, 0.25)',
+                    boxShadow: '0 4px 15px rgba(16, 185, 129, 0.25)',
                     transition: 'all 0.2s ease'
                   }}
                   onMouseEnter={(e) => e.currentTarget.style.opacity = '0.9'}
@@ -291,7 +209,7 @@ const Compress: React.FC<CompressProps> = ({ onBack }) => {
                         cy="38"
                         r="32"
                         fill="transparent"
-                        stroke="var(--color-coral)"
+                        stroke="var(--color-green)"
                         strokeWidth="6"
                         strokeDasharray={2 * Math.PI * 32}
                         strokeDashoffset={2 * Math.PI * 32 * (1 - savingsPercent / 100)}
@@ -308,7 +226,7 @@ const Compress: React.FC<CompressProps> = ({ onBack }) => {
                   {/* Text summary block */}
                   <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'left', gap: '0.25rem' }}>
                     <p style={{ margin: 0, fontSize: '1rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
-                      Your PDF is now <strong style={{ color: 'var(--color-coral)' }}>{savingsPercent}%</strong> smaller!
+                      Your PDF is now <strong style={{ color: 'var(--color-green)' }}>{savingsPercent}%</strong> smaller!
                     </p>
                     <p style={{ margin: 0, fontSize: '1.15rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>
                       {formatSize(originalSize)} <span style={{ color: 'var(--text-muted)', fontWeight: 'normal', margin: '0 0.25rem' }}>→</span> {formatSize(compressedSize)}
@@ -337,8 +255,8 @@ const Compress: React.FC<CompressProps> = ({ onBack }) => {
             style={{
               padding: '0.75rem 1rem',
               borderRadius: '8px',
-              border: compressionLevel === 'recommended' ? '2px solid var(--color-coral)' : '1px solid var(--color-border)',
-              background: compressionLevel === 'recommended' ? 'rgba(238, 108, 77, 0.08)' : 'rgba(255,255,255,0.02)',
+              border: compressionLevel === 'recommended' ? '2px solid var(--color-green)' : '1px solid var(--color-border)',
+              background: compressionLevel === 'recommended' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(255,255,255,0.02)',
               cursor: isProcessing ? 'not-allowed' : 'pointer',
               transition: 'all 0.2s ease',
               opacity: isProcessing ? 0.7 : 1
@@ -346,7 +264,7 @@ const Compress: React.FC<CompressProps> = ({ onBack }) => {
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
               <span style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>Recommended</span>
-              <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--color-coral)', background: 'rgba(238, 108, 77, 0.15)', padding: '0.1rem 0.4rem', borderRadius: '4px' }}>Default</span>
+              <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--color-green)', background: 'rgba(16, 185, 129, 0.15)', padding: '0.1rem 0.4rem', borderRadius: '4px' }}>Default</span>
             </div>
             <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.3 }}>
               Balanced quality and file size reduction.
@@ -358,8 +276,8 @@ const Compress: React.FC<CompressProps> = ({ onBack }) => {
             style={{
               padding: '0.75rem 1rem',
               borderRadius: '8px',
-              border: compressionLevel === 'extreme' ? '2px solid var(--color-coral)' : '1px solid var(--color-border)',
-              background: compressionLevel === 'extreme' ? 'rgba(238, 108, 77, 0.08)' : 'rgba(255,255,255,0.02)',
+              border: compressionLevel === 'extreme' ? '2px solid var(--color-green)' : '1px solid var(--color-border)',
+              background: compressionLevel === 'extreme' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(255,255,255,0.02)',
               cursor: isProcessing ? 'not-allowed' : 'pointer',
               transition: 'all 0.2s ease',
               opacity: isProcessing ? 0.7 : 1
@@ -378,8 +296,8 @@ const Compress: React.FC<CompressProps> = ({ onBack }) => {
             style={{
               padding: '0.75rem 1rem',
               borderRadius: '8px',
-              border: compressionLevel === 'low' ? '2px solid var(--color-coral)' : '1px solid var(--color-border)',
-              background: compressionLevel === 'low' ? 'rgba(238, 108, 77, 0.08)' : 'rgba(255,255,255,0.02)',
+              border: compressionLevel === 'low' ? '2px solid var(--color-green)' : '1px solid var(--color-border)',
+              background: compressionLevel === 'low' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(255,255,255,0.02)',
               cursor: isProcessing ? 'not-allowed' : 'pointer',
               transition: 'all 0.2s ease',
               opacity: isProcessing ? 0.7 : 1
@@ -392,7 +310,72 @@ const Compress: React.FC<CompressProps> = ({ onBack }) => {
               High quality output with minor file size optimization.
             </p>
           </div>
+
+          <div 
+            onClick={() => !isProcessing && setCompressionLevel('custom')}
+            style={{
+              padding: '0.75rem 1rem',
+              borderRadius: '8px',
+              border: compressionLevel === 'custom' ? '2px solid var(--color-green)' : '1px solid var(--color-border)',
+              background: compressionLevel === 'custom' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(255,255,255,0.02)',
+              cursor: isProcessing ? 'not-allowed' : 'pointer',
+              transition: 'all 0.2s ease',
+              opacity: isProcessing ? 0.7 : 1
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+              <span style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>Custom Compression</span>
+            </div>
+            <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.3 }}>
+              Specify your own downsampling resolution (DPI) and JPEG quality.
+            </p>
+          </div>
         </div>
+
+        {compressionLevel === 'custom' && (
+          <div style={{ marginTop: '-1rem', marginBottom: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', padding: '0.75rem', borderRadius: '8px', border: '1px dashed var(--color-border)', background: 'rgba(255,255,255,0.01)' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                Image Downsampling (DPI)
+              </label>
+              <input 
+                type="number" 
+                value={customDpi} 
+                onChange={(e) => setCustomDpi(Math.max(50, Math.min(600, parseInt(e.target.value) || 150)))}
+                disabled={isProcessing}
+                style={{
+                  width: '100%',
+                  padding: '0.4rem 0.6rem',
+                  borderRadius: '6px',
+                  border: '1px solid var(--color-border)',
+                  background: 'rgba(0,0,0,0.2)',
+                  color: 'var(--text-primary)',
+                  fontSize: '0.85rem'
+                }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                JPEG Compression Quality (10 - 100)
+              </label>
+              <input 
+                type="number" 
+                value={customQuality} 
+                onChange={(e) => setCustomQuality(Math.max(10, Math.min(100, parseInt(e.target.value) || 70)))}
+                disabled={isProcessing}
+                style={{
+                  width: '100%',
+                  padding: '0.4rem 0.6rem',
+                  borderRadius: '6px',
+                  border: '1px solid var(--color-border)',
+                  background: 'rgba(0,0,0,0.2)',
+                  color: 'var(--text-primary)',
+                  fontSize: '0.85rem'
+                }}
+              />
+            </div>
+          </div>
+        )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           <button 

@@ -149,6 +149,85 @@ async function runPythonWorker(task: string, inputBuffer: Buffer, inputExtension
   }
 }
 
+// Helper to run Python worker script with arbitrary arguments and multiple outputs
+async function runPythonWorkerAdvanced(
+  task: string,
+  inputBuffer: Buffer,
+  inputExtension: string,
+  outputExtension: string,
+  extraArgs: string[],
+  input2Buffer?: Buffer,
+  input2Extension?: string,
+  additionalOutputSuffixes: string[] = []
+): Promise<{ outputBuffer: Buffer; extraFiles: { [suffix: string]: Buffer } }> {
+  const tempId = Math.random().toString(36).substring(7);
+  const tempDir = path.join(os.tmpdir(), `docrit_py_worker_adv_${tempId}`);
+  await fs.promises.mkdir(tempDir, { recursive: true });
+  
+  const tempInputPath = path.join(tempDir, `input.${inputExtension}`);
+  const tempOutputPath = path.join(tempDir, `output.${outputExtension}`);
+  
+  await fs.promises.writeFile(tempInputPath, inputBuffer);
+  
+  let tempInput2Path = '';
+  if (input2Buffer && input2Extension) {
+    tempInput2Path = path.join(tempDir, `input2.${input2Extension}`);
+    await fs.promises.writeFile(tempInput2Path, input2Buffer);
+  }
+  
+  try {
+    let pythonCmd = 'python';
+    try {
+      await execPromise('python --version');
+    } catch (err) {
+      try {
+        await execPromise('py --version');
+        pythonCmd = 'py';
+      } catch (e) {
+        throw new Error('Python is not installed or not in PATH.');
+      }
+    }
+    
+    const workerScriptPath = path.join(__dirname, '../workers/conversion_worker.py');
+    let cmdArgs = [
+      `"${workerScriptPath}"`,
+      `--task ${task}`,
+      `--input "${tempInputPath}"`,
+      `--output "${tempOutputPath}"`
+    ];
+    
+    // Resolve dynamic [OUTPUT] placeholder in arguments
+    const resolvedArgs = extraArgs.map(arg => arg.replace(/\[OUTPUT\]/g, tempOutputPath));
+    resolvedArgs.forEach(arg => cmdArgs.push(arg));
+    
+    if (tempInput2Path) {
+      cmdArgs.push(`--input2 "${tempInput2Path}"`);
+    }
+    
+    const cmd = `${pythonCmd} ${cmdArgs.join(' ')}`;
+    console.log(`Executing Advanced: ${cmd}`);
+    await execPromise(cmd);
+    
+    if (!fs.existsSync(tempOutputPath)) {
+      throw new Error(`Python worker failed: Output file was not generated.`);
+    }
+    
+    const outputBuffer = await fs.promises.readFile(tempOutputPath);
+    
+    const extraFiles: { [suffix: string]: Buffer } = {};
+    for (const suffix of additionalOutputSuffixes) {
+      const filePath = tempOutputPath + suffix;
+      if (fs.existsSync(filePath)) {
+        extraFiles[suffix] = await fs.promises.readFile(filePath);
+      }
+    }
+    
+    return { outputBuffer, extraFiles };
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 // Helper to compress PDF using Ghostscript
 async function runGhostscriptCompress(inputBuffer: Buffer): Promise<Buffer> {
   const tempId = Math.random().toString(36).substring(7);
@@ -481,17 +560,30 @@ export const splitPDF = async (req: Request, res: Response) => {
 export const compressPDF = async (req: Request, res: Response) => {
   try {
     const file = req.file;
+    const { level = 'medium', dpi, quality } = req.body;
+    
     if (!file) {
       return res.status(400).json({ error: 'Please upload a PDF file.' });
     }
 
-    const compressedBytes = await runGhostscriptCompress(file.buffer);
+    const extraArgs = [`--level ${level}`];
+    if (dpi) extraArgs.push(`--dpi ${dpi}`);
+    if (quality) extraArgs.push(`--quality ${quality}`);
+
+    const result = await runPythonWorkerAdvanced('compress', file.buffer, 'pdf', 'pdf', extraArgs);
+    
+    const originalSize = file.buffer.length;
+    const compressedSize = result.outputBuffer.length;
 
     res.contentType('application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename="compressed.pdf"');
-    return res.send(compressedBytes);
+    res.setHeader('X-Original-Size', originalSize.toString());
+    res.setHeader('X-Compressed-Size', compressedSize.toString());
+    res.setHeader('Access-Control-Expose-Headers', 'X-Original-Size, X-Compressed-Size');
+    
+    return res.send(result.outputBuffer);
   } catch (error: any) {
-    console.error('Error compressing PDF with Ghostscript:', error);
+    console.error('Error compressing PDF with Python worker:', error);
     return res.status(500).json({ error: error.message || 'Failed to compress PDF.' });
   }
 };
@@ -852,7 +944,7 @@ export const organizePDF = async (req: Request, res: Response) => {
 export const signPDF = async (req: Request, res: Response) => {
   try {
     const file = req.file;
-    const { signatureData, pageIndex, x, y, width, height } = req.body;
+    const { signatureData, pageIndex, pages, x, y, width, height } = req.body;
     
     if (!file) {
       return res.status(400).json({ error: 'Please upload a PDF file.' });
@@ -862,13 +954,24 @@ export const signPDF = async (req: Request, res: Response) => {
     }
 
     const pdfDoc = await PDFDocument.load(file.buffer);
-    const pageIdx = parseInt(pageIndex || '0', 10);
-    const pages = pdfDoc.getPages();
-    if (pageIdx < 0 || pageIdx >= pages.length) {
-      return res.status(400).json({ error: 'Invalid page index.' });
+    const pagesList = pdfDoc.getPages();
+    const totalPages = pagesList.length;
+
+    let pageIndices: number[] = [];
+    if (pages !== undefined) {
+      pageIndices = parseRanges(String(pages), totalPages);
+    } else if (pageIndex !== undefined) {
+      const pageIdx = parseInt(pageIndex, 10);
+      if (pageIdx >= 0 && pageIdx < totalPages) {
+        pageIndices = [pageIdx];
+      }
+    } else {
+      pageIndices = [0];
     }
 
-    const page = pages[pageIdx];
+    if (pageIndices.length === 0) {
+      return res.status(400).json({ error: 'Invalid page index or range.' });
+    }
     
     const matches = signatureData.match(/^data:image\/([a-zA-Z+]+);base64,(.+)$/);
     if (!matches) {
@@ -888,12 +991,15 @@ export const signPDF = async (req: Request, res: Response) => {
     const pw = parseFloat(width || '150');
     const ph = parseFloat(height || '75');
 
-    page.drawImage(embeddedImg, {
-      x: px,
-      y: py,
-      width: pw,
-      height: ph
-    });
+    for (const pageIdx of pageIndices) {
+      const page = pagesList[pageIdx];
+      page.drawImage(embeddedImg, {
+        x: px,
+        y: py,
+        width: pw,
+        height: ph
+      });
+    }
 
     const pdfBytes = await pdfDoc.save();
     res.contentType('application/pdf');
@@ -910,354 +1016,66 @@ export const editPDF = async (req: Request, res: Response) => {
   try {
     const file = req.file;
     const annotationsStr = req.body.annotations;
+    const pageOrderStr = req.body.pageOrder;
+    const rotationsStr = req.body.rotations;
     
     if (!file) {
       return res.status(400).json({ error: 'Please upload a PDF file.' });
     }
+
+    const tempId = Math.random().toString(36).substring(7);
+    const tempDir = path.join(os.tmpdir(), `docrit_py_edit_${tempId}`);
+    await fs.promises.mkdir(tempDir, { recursive: true });
     
-    const pdfDoc = await PDFDocument.load(file.buffer);
-    const pages = pdfDoc.getPages();
-    pdfDoc.registerFontkit(fontkit);
-
-    const hexToRgb = (hex: string) => {
-      const hexVal = hex.replace('#', '');
-      const r = parseInt(hexVal.substring(0, 2), 16) / 255;
-      const g = parseInt(hexVal.substring(2, 4), 16) / 255;
-      const b = parseInt(hexVal.substring(4, 6), 16) / 255;
-      return rgb(isNaN(r) ? 0 : r, isNaN(g) ? 0 : g, isNaN(b) ? 0 : b);
+    const tempInputPath = path.join(tempDir, 'input.pdf');
+    const tempOutputPath = path.join(tempDir, 'output.pdf');
+    const tempJsonPath = path.join(tempDir, 'meta.json');
+    
+    await fs.promises.writeFile(tempInputPath, file.buffer);
+    
+    const meta = {
+      annotations: JSON.parse(annotationsStr || '[]'),
+      pageOrder: pageOrderStr ? JSON.parse(pageOrderStr) : null,
+      rotations: rotationsStr ? JSON.parse(rotationsStr) : null
     };
-
-    const getEmbedFont = async (doc: PDFDocument, fontFamily?: string, bold?: boolean, italic?: boolean) => {
-      const family = fontFamily?.toLowerCase() || 'helvetica';
-      if (family.includes('times')) {
-        if (bold && italic) return await doc.embedFont(StandardFonts.TimesRomanBoldItalic);
-        if (bold) return await doc.embedFont(StandardFonts.TimesRomanBold);
-        if (italic) return await doc.embedFont(StandardFonts.TimesRomanItalic);
-        return await doc.embedFont(StandardFonts.TimesRoman);
-      } else if (family.includes('courier')) {
-        if (bold && italic) return await doc.embedFont(StandardFonts.CourierBoldOblique);
-        if (bold) return await doc.embedFont(StandardFonts.CourierBold);
-        if (italic) return await doc.embedFont(StandardFonts.CourierOblique);
-        return await doc.embedFont(StandardFonts.Courier);
-      } else {
-        if (bold && italic) return await doc.embedFont(StandardFonts.HelveticaBoldOblique);
-        if (bold) return await doc.embedFont(StandardFonts.HelveticaBold);
-        if (italic) return await doc.embedFont(StandardFonts.HelveticaOblique);
-        return await doc.embedFont(StandardFonts.Helvetica);
-      }
-    };
-
-    if (annotationsStr) {
-      const annotations = JSON.parse(annotationsStr);
-      for (const ann of annotations) {
-        const pageIdx = ann.page;
-        if (pageIdx >= 0 && pageIdx < pages.length) {
-          const page = pages[pageIdx];
-          
-          if (ann.type === 'text') {
-            const font = await getEmbedFont(pdfDoc, ann.fontFamily, ann.bold, ann.italic);
-            const size = ann.fontSize || 12;
-            const textColor = ann.color ? hexToRgb(ann.color) : rgb(0, 0, 0);
-            
-            // Draw background if specified
-            if (ann.bgColor) {
-              page.drawRectangle({
-                x: ann.x,
-                y: ann.y,
-                width: ann.width || 100,
-                height: ann.height || 30,
-                color: hexToRgb(ann.bgColor),
-                opacity: ann.opacity !== undefined ? ann.opacity : 1,
-              });
-            }
-
-            // Draw text lines
-            const textContent = ann.text || '';
-            const lines = textContent.split('\n');
-            const lineHeight = size * 1.25;
-            for (let i = 0; i < lines.length; i++) {
-              const lineY = ann.y + (ann.height || size) - size - 4 - (i * lineHeight);
-              if (lineY >= ann.y) {
-                const textWidth = font.widthOfTextAtSize(lines[i], size);
-                
-                // Alignment offset calculations
-                let lineX = ann.x + 5;
-                if (ann.alignment === 'center') {
-                  lineX = ann.x + ((ann.width || 100) - textWidth) / 2;
-                } else if (ann.alignment === 'right') {
-                  lineX = ann.x + (ann.width || 100) - textWidth - 5;
-                }
-
-                page.drawText(lines[i], {
-                  x: lineX,
-                  y: lineY,
-                  size: size,
-                  font: font,
-                  color: textColor,
-                  opacity: ann.opacity !== undefined ? ann.opacity : 1,
-                });
-
-                // Underline
-                if (ann.underline) {
-                  page.drawLine({
-                    start: { x: lineX, y: lineY - 2 },
-                    end: { x: lineX + textWidth, y: lineY - 2 },
-                    color: textColor,
-                    thickness: 1,
-                    opacity: ann.opacity !== undefined ? ann.opacity : 1,
-                  });
-                }
-
-                // Strikethrough
-                if (ann.strikethrough) {
-                  page.drawLine({
-                    start: { x: lineX, y: lineY + (size / 2) - 1 },
-                    end: { x: lineX + textWidth, y: lineY + (size / 2) - 1 },
-                    color: textColor,
-                    thickness: 1,
-                    opacity: ann.opacity !== undefined ? ann.opacity : 1,
-                  });
-                }
-              }
-            }
-          }
-          else if (ann.type === 'shape') {
-            const color = ann.bgColor ? hexToRgb(ann.bgColor) : undefined;
-            const borderColor = ann.color ? hexToRgb(ann.color) : undefined;
-            const borderWidth = ann.borderWidth !== undefined ? ann.borderWidth : 2;
-            const opacity = ann.opacity !== undefined ? ann.opacity : 1;
-
-            if (ann.shapeType === 'circle') {
-              const rx = (ann.width || 50) / 2;
-              const ry = (ann.height || 50) / 2;
-              page.drawEllipse({
-                x: ann.x + rx,
-                y: ann.y + ry,
-                xScale: rx,
-                yScale: ry,
-                color: color,
-                borderColor: borderColor,
-                borderWidth: borderWidth,
-                opacity: opacity,
-              });
-            } else if (ann.shapeType === 'line') {
-              page.drawLine({
-                start: { x: ann.x, y: ann.y },
-                end: { x: ann.x + (ann.width || 50), y: ann.y + (ann.height || 50) },
-                color: borderColor || rgb(0, 0, 0),
-                thickness: borderWidth || 2,
-                opacity: opacity,
-              });
-            } else {
-              // default to rectangle
-              page.drawRectangle({
-                x: ann.x,
-                y: ann.y,
-                width: ann.width || 50,
-                height: ann.height || 50,
-                color: color,
-                borderColor: borderColor,
-                borderWidth: borderWidth,
-                opacity: opacity,
-              });
-            }
-          }
-          else if (ann.type === 'drawing') {
-            const color = ann.color ? hexToRgb(ann.color) : rgb(0, 0, 0);
-            const thickness = ann.borderWidth !== undefined ? ann.borderWidth : 2;
-            const opacity = ann.opacity !== undefined ? ann.opacity : 1;
-
-            if (ann.paths && Array.isArray(ann.paths)) {
-              for (const stroke of ann.paths) {
-                if (Array.isArray(stroke)) {
-                  for (let i = 0; i < stroke.length - 1; i++) {
-                    const p1 = stroke[i];
-                    const p2 = stroke[i + 1];
-                    page.drawLine({
-                      start: { x: p1.x, y: p1.y },
-                      end: { x: p2.x, y: p2.y },
-                      color: color,
-                      thickness: thickness,
-                      opacity: opacity,
-                    });
-                  }
-                }
-              }
-            }
-          }
-          else if (ann.type === 'image') {
-            if (ann.imageBytes) {
-              const matches = ann.imageBytes.match(/^data:image\/([a-zA-Z+]+);base64,(.+)$/);
-              if (matches) {
-                const imgBuffer = Buffer.from(matches[2], 'base64');
-                const imgType = matches[1].toLowerCase();
-                let embeddedImg;
-                if (imgType === 'png') {
-                  embeddedImg = await pdfDoc.embedPng(imgBuffer);
-                } else {
-                  embeddedImg = await pdfDoc.embedJpg(imgBuffer);
-                }
-                
-                // Draw border if specified
-                if (ann.borderWidth && ann.color) {
-                  page.drawRectangle({
-                    x: ann.x - ann.borderWidth / 2,
-                    y: ann.y - ann.borderWidth / 2,
-                    width: (ann.width || 100) + ann.borderWidth,
-                    height: (ann.height || 100) + ann.borderWidth,
-                    borderColor: hexToRgb(ann.color),
-                    borderWidth: ann.borderWidth,
-                    opacity: ann.opacity !== undefined ? ann.opacity : 1,
-                  });
-                }
-
-                page.drawImage(embeddedImg, {
-                  x: ann.x,
-                  y: ann.y,
-                  width: ann.width || 100,
-                  height: ann.height || 100,
-                  opacity: ann.opacity !== undefined ? ann.opacity : 1,
-                });
-              }
-            }
-          }
-          else if (ann.type === 'highlight') {
-            const color = ann.bgColor ? hexToRgb(ann.bgColor) : rgb(1, 0.9, 0.2); // default transparent yellow
-            const opacity = ann.opacity !== undefined ? ann.opacity : 0.35;
-            page.drawRectangle({
-              x: ann.x,
-              y: ann.y,
-              width: ann.width || 50,
-              height: ann.height || 15,
-              color: color,
-              opacity: opacity,
-            });
-          }
-          else if (ann.type === 'underline' || ann.type === 'strikethrough') {
-            const color = ann.color ? hexToRgb(ann.color) : rgb(0, 0, 1);
-            const thickness = ann.borderWidth !== undefined ? ann.borderWidth : 2;
-            const opacity = ann.opacity !== undefined ? ann.opacity : 0.8;
-            
-            const targetY = ann.type === 'underline' ? ann.y + 2 : ann.y + (ann.height || 10) / 2;
-
-            page.drawLine({
-              start: { x: ann.x, y: targetY },
-              end: { x: ann.x + (ann.width || 50), y: targetY },
-              color: color,
-              thickness: thickness,
-              opacity: opacity,
-            });
-          }
-          else if (ann.type === 'note') {
-            const color = ann.color ? hexToRgb(ann.color) : rgb(0.93, 0.42, 0.3);
-            const opacity = ann.opacity !== undefined ? ann.opacity : 1;
-            
-            // Draw a sticky note icon
-            page.drawRectangle({
-              x: ann.x,
-              y: ann.y,
-              width: 18,
-              height: 18,
-              color: rgb(0.99, 0.9, 0.4), // Sticky-note yellow
-              borderColor: color,
-              borderWidth: 1.5,
-              opacity: opacity,
-            });
-            // Draw lines inside note icon
-            page.drawLine({
-              start: { x: ann.x + 4, y: ann.y + 12 },
-              end: { x: ann.x + 14, y: ann.y + 12 },
-              color: color,
-              thickness: 1.2,
-              opacity: opacity,
-            });
-            page.drawLine({
-              start: { x: ann.x + 4, y: ann.y + 8 },
-              end: { x: ann.x + 10, y: ann.y + 8 },
-              color: color,
-              thickness: 1.2,
-              opacity: opacity,
-            });
-          }
-          else if (ann.type === 'callout') {
-            const font = await getEmbedFont(pdfDoc, ann.fontFamily, ann.bold, ann.italic);
-            const size = ann.fontSize || 10;
-            const textColor = ann.color ? hexToRgb(ann.color) : rgb(0, 0, 0);
-            const bgColor = ann.bgColor ? hexToRgb(ann.bgColor) : rgb(0.95, 0.95, 0.95);
-            const borderColor = ann.color ? hexToRgb(ann.color) : rgb(0.93, 0.42, 0.3);
-            const borderWidth = ann.borderWidth !== undefined ? ann.borderWidth : 1.5;
-            const opacity = ann.opacity !== undefined ? ann.opacity : 1;
-
-            // Draw border box
-            page.drawRectangle({
-              x: ann.x,
-              y: ann.y,
-              width: ann.width || 100,
-              height: ann.height || 35,
-              color: bgColor,
-              borderColor: borderColor,
-              borderWidth: borderWidth,
-              opacity: opacity,
-            });
-
-            // Draw text
-            const textContent = ann.text || '';
-            const lines = textContent.split('\n');
-            const lineHeight = size * 1.25;
-            for (let i = 0; i < lines.length; i++) {
-              const lineY = ann.y + (ann.height || size) - size - 6 - (i * lineHeight);
-              if (lineY >= ann.y) {
-                const textWidth = font.widthOfTextAtSize(lines[i], size);
-                let lineX = ann.x + 6;
-                if (ann.alignment === 'center') {
-                  lineX = ann.x + ((ann.width || 100) - textWidth) / 2;
-                } else if (ann.alignment === 'right') {
-                  lineX = ann.x + (ann.width || 100) - textWidth - 6;
-                }
-
-                page.drawText(lines[i], {
-                  x: lineX,
-                  y: lineY,
-                  size: size,
-                  font: font,
-                  color: textColor,
-                  opacity: opacity,
-                });
-
-                if (ann.underline) {
-                  page.drawLine({
-                    start: { x: lineX, y: lineY - 2 },
-                    end: { x: lineX + textWidth, y: lineY - 2 },
-                    color: textColor,
-                    thickness: 1,
-                    opacity: opacity,
-                  });
-                }
-                if (ann.strikethrough) {
-                  page.drawLine({
-                    start: { x: lineX, y: lineY + (size / 2) - 1 },
-                    end: { x: lineX + textWidth, y: lineY + (size / 2) - 1 },
-                    color: textColor,
-                    thickness: 1,
-                    opacity: opacity,
-                  });
-                }
-              }
-            }
-          }
+    await fs.promises.writeFile(tempJsonPath, JSON.stringify(meta, null, 2));
+    
+    try {
+      let pythonCmd = 'python';
+      try {
+        await execPromise('python --version');
+      } catch (err) {
+        try {
+          await execPromise('py --version');
+          pythonCmd = 'py';
+        } catch (e) {
+          throw new Error('Python is not installed or not in PATH.');
         }
       }
+      
+      const workerScriptPath = path.join(__dirname, '../workers/conversion_worker.py');
+      const cmd = `${pythonCmd} "${workerScriptPath}" --task edit --input "${tempInputPath}" --output "${tempOutputPath}" --extra "${tempJsonPath}"`;
+      
+      console.log(`Executing edit: ${cmd}`);
+      await execPromise(cmd);
+      
+      if (!fs.existsSync(tempOutputPath)) {
+        throw new Error(`Python worker failed: Output file was not generated.`);
+      }
+      
+      const outputBuffer = await fs.promises.readFile(tempOutputPath);
+      res.contentType('application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="edited.pdf"');
+      return res.send(outputBuffer);
+    } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }
-
-    const pdfBytes = await pdfDoc.save();
-    res.contentType('application/pdf');
-    res.setHeader('Content-Disposition', 'attachment; filename="edited.pdf"');
-    return res.send(Buffer.from(pdfBytes));
   } catch (error: any) {
     console.error('Error editing PDF:', error);
     return res.status(500).json({ error: error.message || 'Failed to edit PDF.' });
   }
 };
+
 
 // 4. Crop PDF
 export const cropPDF = async (req: Request, res: Response) => {
@@ -1295,7 +1113,6 @@ export const cropPDF = async (req: Request, res: Response) => {
   }
 };
 
-// 5. Redact PDF
 export const redactPDF = async (req: Request, res: Response) => {
   try {
     const file = req.file;
@@ -1311,8 +1128,17 @@ export const redactPDF = async (req: Request, res: Response) => {
     if (redactionsStr) {
       const redactions = JSON.parse(redactionsStr);
       for (const red of redactions) {
-        const pageIdx = red.page;
-        if (pageIdx >= 0 && pageIdx < pages.length) {
+        let pageIndices: number[] = [];
+        if (red.pages !== undefined) {
+          pageIndices = parseRanges(String(red.pages), pages.length);
+        } else if (red.page !== undefined) {
+          const pageIdx = parseInt(red.page, 10);
+          if (pageIdx >= 0 && pageIdx < pages.length) {
+            pageIndices = [pageIdx];
+          }
+        }
+
+        for (const pageIdx of pageIndices) {
           const page = pages[pageIdx];
           page.drawRectangle({
             x: red.x,
@@ -1394,12 +1220,31 @@ export const repairPDF = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Please upload a PDF file.' });
     }
 
-    const pdfDoc = await PDFDocument.load(file.buffer);
-    const pdfBytes = await pdfDoc.save();
+    const { outputBuffer, extraFiles } = await runPythonWorkerAdvanced(
+      'repair', 
+      file.buffer, 
+      'pdf', 
+      'pdf', 
+      [], 
+      undefined, 
+      undefined, 
+      ['.report.json']
+    );
 
-    res.contentType('application/pdf');
-    res.setHeader('Content-Disposition', 'attachment; filename="repaired.pdf"');
-    return res.send(Buffer.from(pdfBytes));
+    const reportBuffer = extraFiles['.report.json'];
+    let report = { errors_found: [], errors_repaired: [], remaining_warnings: [] };
+    if (reportBuffer) {
+      try {
+        report = JSON.parse(reportBuffer.toString('utf-8'));
+      } catch (e) {
+        console.error('Failed to parse repair report JSON:', e);
+      }
+    }
+
+    return res.json({
+      repairedBytes: outputBuffer.toString('base64'),
+      report
+    });
   } catch (error: any) {
     console.error('Error repairing PDF:', error);
     return res.status(500).json({ error: error.message || 'Failed to repair PDF.' });
@@ -1414,43 +1259,39 @@ export const comparePDF = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Please upload two PDF files to compare.' });
     }
 
-    const doc1 = await PDFDocument.load(files[0].buffer);
-    const doc2 = await PDFDocument.load(files[1].buffer);
+    const { outputBuffer, extraFiles } = await runPythonWorkerAdvanced(
+      'compare',
+      files[0].buffer,
+      'pdf',
+      'pdf',
+      [
+        '--report-json "[OUTPUT].report.json"',
+        '--report-html "[OUTPUT].report.html"'
+      ],
+      files[1].buffer,
+      'pdf',
+      ['.report.json', '.report.html', '.original.pdf']
+    );
 
-    const comparisonDoc = await PDFDocument.create();
-    
-    const count1 = doc1.getPageCount();
-    const count2 = doc2.getPageCount();
-    const maxCount = Math.max(count1, count2);
+    const reportJsonBuffer = extraFiles['.report.json'];
+    const reportHtmlBuffer = extraFiles['.report.html'];
+    const originalPdfBuffer = extraFiles['.original.pdf'];
 
-    for (let i = 0; i < maxCount; i++) {
-      const page = comparisonDoc.addPage([1200, 800]);
-      
-      if (i < count1) {
-        const [embedded1] = await comparisonDoc.embedPdf(files[0].buffer, [i]);
-        page.drawPage(embedded1, {
-          x: 50,
-          y: 50,
-          width: 500,
-          height: 700
-        });
-      }
-      
-      if (i < count2) {
-        const [embedded2] = await comparisonDoc.embedPdf(files[1].buffer, [i]);
-        page.drawPage(embedded2, {
-          x: 650,
-          y: 50,
-          width: 500,
-          height: 700
-        });
+    let report = { summary: { total_differences: 0, added: 0, removed: 0, modified: 0 }, differences: [] };
+    if (reportJsonBuffer) {
+      try {
+        report = JSON.parse(reportJsonBuffer.toString('utf-8'));
+      } catch (e) {
+        console.error('Failed to parse comparison JSON report:', e);
       }
     }
 
-    const pdfBytes = await comparisonDoc.save();
-    res.contentType('application/pdf');
-    res.setHeader('Content-Disposition', 'attachment; filename="compared.pdf"');
-    return res.send(Buffer.from(pdfBytes));
+    return res.json({
+      originalPdfBytes: originalPdfBuffer ? originalPdfBuffer.toString('base64') : '',
+      modifiedPdfBytes: outputBuffer.toString('base64'),
+      reportHtml: reportHtmlBuffer ? reportHtmlBuffer.toString('utf-8') : '',
+      report
+    });
   } catch (error: any) {
     console.error('Error comparing PDFs:', error);
     return res.status(500).json({ error: error.message || 'Failed to compare PDFs.' });
@@ -1600,25 +1441,322 @@ export const pdfToExcel = async (req: Request, res: Response) => {
 export const ocrPDF = async (req: Request, res: Response) => {
   try {
     const file = req.file;
-    const { ocrType } = req.body; // 'text' or 'pdf'
     
     if (!file) {
       return res.status(400).json({ error: 'Please upload a PDF or an Image file.' });
     }
 
-    const type = ocrType === 'pdf' ? 'pdf' : 'text';
     const inputExt = file.originalname.split('.').pop() || 'pdf';
-    const outputExt = type === 'pdf' ? 'pdf' : 'txt';
-    const contentType = type === 'pdf' ? 'application/pdf' : 'text/plain';
-    const filename = type === 'pdf' ? 'ocr_searchable.pdf' : 'extracted_text.txt';
+    
+    const outputBuffer = await runPythonWorker('ocr', file.buffer, inputExt, 'pdf', 'pdf');
 
-    const outputBuffer = await runPythonWorker('ocr', file.buffer, inputExt, outputExt, type);
-
-    res.contentType(contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.contentType('application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="ocr_searchable.pdf"');
     return res.send(outputBuffer);
   } catch (error: any) {
     console.error('Error in OCR processing:', error);
     return res.status(500).json({ error: error.message || 'Failed to perform OCR.' });
+  }
+};
+
+// 17. Detect Form Fields
+export const detectForms = async (req: Request, res: Response) => {
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ error: 'Please upload a PDF file.' });
+    }
+    
+    const outputBuffer = await runPythonWorker('detect-forms', file.buffer, 'pdf', 'json');
+    const fields = JSON.parse(outputBuffer.toString('utf-8'));
+    return res.json({ fields });
+  } catch (error: any) {
+    console.error('Error detecting form fields:', error);
+    return res.status(500).json({ error: error.message || 'Failed to detect form fields.' });
+  }
+};
+
+// 18. Save Form Fields
+export const saveForms = async (req: Request, res: Response) => {
+  try {
+    const file = req.file;
+    const fieldsStr = req.body.fields;
+    
+    if (!file) {
+      return res.status(400).json({ error: 'Please upload a PDF file.' });
+    }
+    
+    const pdfDoc = await PDFDocument.load(file.buffer);
+    const pages = pdfDoc.getPages();
+    pdfDoc.registerFontkit(fontkit);
+
+    const pageOrderStr = req.body.pageOrder;
+    const rotationsStr = req.body.rotations;
+    
+    // Apply rotations first on the original pages
+    if (rotationsStr) {
+      const rotations = JSON.parse(rotationsStr);
+      for (const originalIdx of Object.keys(rotations)) {
+        const idx = parseInt(originalIdx, 10);
+        if (idx >= 0 && idx < pages.length) {
+          const page = pages[idx];
+          const currentRot = page.getRotation().angle;
+          page.setRotation(degrees(currentRot + rotations[originalIdx]));
+        }
+      }
+    }
+
+    // Rearrange/Delete/Duplicate pages by copying to a new document
+    let activePdfDoc = pdfDoc;
+    let activePages = pages;
+    
+    if (pageOrderStr) {
+      const pageOrder = JSON.parse(pageOrderStr) as number[];
+      const newPdfDoc = await PDFDocument.create();
+      newPdfDoc.registerFontkit(fontkit);
+      
+      for (const idx of pageOrder) {
+        if (idx === -1) {
+          newPdfDoc.addPage([600, 800]);
+        } else {
+          const [copiedPage] = await newPdfDoc.copyPages(pdfDoc, [idx]);
+          newPdfDoc.addPage(copiedPage);
+        }
+      }
+      activePdfDoc = newPdfDoc;
+      activePages = newPdfDoc.getPages();
+    }
+
+    const form = activePdfDoc.getForm();
+    
+    if (fieldsStr) {
+      const fields = JSON.parse(fieldsStr);
+      for (const f of fields) {
+        const pageIdx = f.page;
+        if (pageIdx >= 0 && pageIdx < activePages.length) {
+          const page = activePages[pageIdx];
+          const { width: pageWidth, height: pageHeight } = page.getSize();
+          
+          const px = (f.x / 100) * pageWidth;
+          const py = ((100 - (f.y + f.height)) / 100) * pageHeight;
+          const pw = (f.width / 100) * pageWidth;
+          const ph = (f.height / 100) * pageHeight;
+          
+          const name = f.name || `field_${pageIdx}_${Math.random().toString(36).substring(7)}`;
+          
+          let field: any = null;
+          let isNew = false;
+          
+          try {
+            field = form.getField(name);
+          } catch (e) {
+            isNew = true;
+          }
+          
+          if (isNew) {
+            if (f.type === 'text' || f.type === 'date') {
+              const newField = form.createTextField(name);
+              newField.addToPage(page, { x: px, y: py, width: pw, height: ph });
+              field = newField;
+            } else if (f.type === 'checkbox') {
+              const newField = form.createCheckBox(name);
+              newField.addToPage(page, { x: px, y: py, width: pw, height: ph });
+              field = newField;
+            } else if (f.type === 'dropdown') {
+              const newField = form.createDropdown(name);
+              newField.addToPage(page, { x: px, y: py, width: pw, height: ph });
+              field = newField;
+            } else if (f.type === 'radio') {
+              const groupName = f.group || name;
+              let radioGroup;
+              try {
+                radioGroup = form.getRadioGroup(groupName);
+              } catch (err) {
+                radioGroup = form.createRadioGroup(groupName);
+              }
+              radioGroup.addOptionToPage(f.optionName || name, page, { x: px, y: py, width: pw, height: ph });
+              field = radioGroup;
+            } else if (f.type === 'signature') {
+              const newField = form.createTextField(name);
+              newField.addToPage(page, { x: px, y: py, width: pw, height: ph });
+              field = newField;
+            }
+          }
+          
+          if (field) {
+            try {
+              if (f.type === 'text' || f.type === 'date' || f.type === 'signature') {
+                if (typeof field.setText === 'function') {
+                  field.setText(f.value || '');
+                }
+              } else if (f.type === 'checkbox') {
+                if (typeof field.check === 'function') {
+                  if (f.value === 'true' || f.value === true || f.value === 'yes' || String(f.value).toLowerCase() === 'on') {
+                    field.check();
+                  } else {
+                    field.uncheck();
+                  }
+                }
+              } else if (f.type === 'dropdown') {
+                if (typeof field.setOptions === 'function' && isNew) {
+                  if (f.options && Array.isArray(f.options) && f.options.length > 0) {
+                    field.setOptions(f.options);
+                  } else {
+                    field.setOptions(['Option 1', 'Option 2']);
+                  }
+                }
+                if (f.value && typeof field.select === 'function') {
+                  field.select(f.value);
+                }
+              } else if (f.type === 'radio') {
+                const optVal = f.optionName || name;
+                if (typeof field.select === 'function') {
+                  field.select(optVal);
+                }
+              }
+              if (f.required && typeof field.enableRequired === 'function') {
+                field.enableRequired();
+              }
+            } catch (fillErr) {
+              console.warn(`Failed to fill field ${name}:`, fillErr);
+            }
+          }
+        }
+      }
+    }
+
+    const flatten = req.body.flatten === 'true' || req.body.flatten === true;
+    if (flatten) {
+      form.flatten();
+    }
+    
+    const pdfBytes = await activePdfDoc.save();
+    res.contentType('application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="interactive_form.pdf"');
+    return res.send(Buffer.from(pdfBytes));
+  } catch (error: any) {
+    console.error('Error saving PDF form fields:', error);
+    return res.status(500).json({ error: error.message || 'Failed to save form fields.' });
+  }
+};
+
+// 19. Batch Fill Form Fields
+export const batchFillForms = async (req: Request, res: Response) => {
+  try {
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+    const pdfFile = files?.file?.[0];
+    const dataFile = files?.dataFile?.[0];
+    const fieldMappingStr = req.body.fieldMapping; 
+    const flatten = req.body.flatten === 'true' || req.body.flatten === true;
+
+    if (!pdfFile || !dataFile) {
+      return res.status(400).json({ error: 'Please upload both a PDF template and a CSV/Excel data file.' });
+    }
+
+    const workbook = XLSX.read(dataFile.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet) as any[];
+
+    if (rows.length === 0) {
+      return res.status(400).json({ error: 'Data file contains no rows.' });
+    }
+
+    const fieldMapping = fieldMappingStr ? JSON.parse(fieldMappingStr) : {};
+    const zip = new AdmZip();
+
+    const mergedPdf = await PDFDocument.create();
+    mergedPdf.registerFontkit(fontkit);
+    let mergeSuccess = true;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const doc = await PDFDocument.load(pdfFile.buffer);
+      doc.registerFontkit(fontkit);
+      const form = doc.getForm();
+
+      for (const [pdfFieldName, dataHeader] of Object.entries(fieldMapping)) {
+        const rawVal = row[dataHeader as string];
+        const val = rawVal !== undefined && rawVal !== null ? String(rawVal) : '';
+
+        try {
+          const field = form.getField(pdfFieldName);
+          if (field) {
+            const fieldType = field.constructor.name;
+            
+            if (fieldType === 'PDFTextField' || typeof (field as any).setText === 'function') {
+              (field as any).setText(val);
+            } else if (fieldType === 'PDFCheckBox' || typeof (field as any).check === 'function') {
+              if (val.toLowerCase() === 'true' || val === '1' || val.toLowerCase() === 'yes' || val.toLowerCase() === 'on') {
+                (field as any).check();
+              } else {
+                (field as any).uncheck();
+              }
+            } else if (fieldType === 'PDFDropdown' || typeof (field as any).select === 'function') {
+              (field as any).select(val);
+            } else if (fieldType === 'PDFRadioGroup' || typeof (field as any).select === 'function') {
+              (field as any).select(val);
+            }
+          }
+        } catch (err) {
+          console.warn(`[Batch Fill] Missing or mismatched field: ${pdfFieldName}`, err);
+        }
+      }
+
+      if (flatten) {
+        form.flatten();
+      }
+
+      const filledPdfBytes = await doc.save();
+      const filename = `filled_row_${i + 1}.pdf`;
+      zip.addFile(filename, Buffer.from(filledPdfBytes));
+
+      if (mergeSuccess) {
+        try {
+          const filledDoc = await PDFDocument.load(filledPdfBytes);
+          const copiedPages = await mergedPdf.copyPages(filledDoc, filledDoc.getPageIndices());
+          copiedPages.forEach(page => mergedPdf.addPage(page));
+        } catch (mergeErr) {
+          console.error('Failed to merge batch row:', mergeErr);
+          mergeSuccess = false;
+        }
+      }
+    }
+
+    if (mergeSuccess && rows.length > 1) {
+      const mergedBytes = await mergedPdf.save();
+      zip.addFile('ALL_MERGED_COMBINED.pdf', Buffer.from(mergedBytes));
+    }
+
+    const zipBuffer = zip.toBuffer();
+    res.contentType('application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="batch_filled_forms.zip"');
+    return res.send(zipBuffer);
+
+  } catch (error: any) {
+    console.error('Error in batch fill forms:', error);
+    return res.status(500).json({ error: error.message || 'Failed to perform batch form filling.' });
+  }
+};
+
+// 20. Parse Data File Headers
+export const parseHeaders = async (req: Request, res: Response) => {
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ error: 'Please upload a data file.' });
+    }
+    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet) as any[];
+    if (rows.length === 0) {
+      return res.status(400).json({ error: 'Data file contains no rows.' });
+    }
+    const headers = Object.keys(rows[0]);
+    return res.json({ headers });
+  } catch (error: any) {
+    console.error('Error parsing data file headers:', error);
+    return res.status(500).json({ error: error.message || 'Failed to parse data file headers.' });
   }
 };

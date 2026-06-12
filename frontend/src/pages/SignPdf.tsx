@@ -22,7 +22,7 @@ const SignPdf: React.FC<SignPdfProps> = ({ onBack }) => {
   const [signatureData, setSignatureData] = useState<string | null>(null);
 
   // Position Parameters
-  const [pageIndex, setPageIndex] = useState(0);
+  const [pages, setPages] = useState('1');
   const [xPos, setXPos] = useState(50);
   const [yPos, setYPos] = useState(50);
   const [width, setWidth] = useState(150);
@@ -128,7 +128,7 @@ const SignPdf: React.FC<SignPdfProps> = ({ onBack }) => {
     const formData = new FormData();
     formData.append('file', files[0]);
     formData.append('signatureData', signatureData);
-    formData.append('pageIndex', String(pageIndex));
+    formData.append('pages', pages);
     formData.append('x', String(xPos));
     formData.append('y', String(yPos));
     formData.append('width', String(width));
@@ -225,8 +225,8 @@ const SignPdf: React.FC<SignPdfProps> = ({ onBack }) => {
         <h3 className="panel-title">Signature Placement</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
           <div>
-            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Target Page (0-indexed)</label>
-            <input type="number" className="form-control" value={pageIndex} onChange={(e) => setPageIndex(Number(e.target.value))} style={{ width: '100%' }} />
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Pages (e.g. 1, 2, 5 or 1-3)</label>
+            <input type="text" className="form-control" value={pages} onChange={(e) => setPages(e.target.value)} style={{ width: '100%' }} placeholder="e.g. 1-3, 5" />
           </div>
           <div>
             <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>X Position</label>

@@ -291,9 +291,9 @@ const RemovePages: React.FC<RemovePagesProps> = ({ onBack }) => {
                     display: 'inline-flex', 
                     alignItems: 'center', 
                     gap: '0.6rem',
-                    backgroundColor: 'var(--color-coral)',
-                    borderColor: 'var(--color-coral)',
-                    boxShadow: '0 4px 15px rgba(238, 108, 77, 0.25)'
+                    backgroundColor: 'var(--color-green)',
+                    borderColor: 'var(--color-green)',
+                    boxShadow: '0 4px 15px rgba(16, 185, 129, 0.25)'
                   }}
                 >
                   <Download size={18} /> Download PDF

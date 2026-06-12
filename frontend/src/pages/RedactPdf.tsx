@@ -15,7 +15,7 @@ const RedactPdf: React.FC<RedactPdfProps> = ({ onBack }) => {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
 
   // Redaction Parameters
-  const [pageIndex, setPageIndex] = useState(0);
+  const [pages, setPages] = useState('1');
   const [x, setX] = useState(100);
   const [y, setY] = useState(100);
   const [width, setWidth] = useState(150);
@@ -42,7 +42,7 @@ const RedactPdf: React.FC<RedactPdfProps> = ({ onBack }) => {
     formData.append('file', files[0]);
     formData.append('redactions', JSON.stringify([
       {
-        page: pageIndex,
+        pages: pages,
         x: x,
         y: y,
         width: width,
@@ -116,8 +116,8 @@ const RedactPdf: React.FC<RedactPdfProps> = ({ onBack }) => {
         
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
           <div>
-            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Page Index (0-indexed)</label>
-            <input type="number" className="form-control" value={pageIndex} onChange={(e) => setPageIndex(Number(e.target.value))} style={{ width: '100%' }} />
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Pages (e.g. 1, 2, 5 or 1-3)</label>
+            <input type="text" className="form-control" value={pages} onChange={(e) => setPages(e.target.value)} style={{ width: '100%' }} placeholder="e.g. 1-3, 5" />
           </div>
           <div>
             <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>X Offset</label>

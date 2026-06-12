@@ -794,26 +794,21 @@ def perform_ocr(input_path, output_path, output_type):
         print("Please install Tesseract OCR and verify it is added to your PATH environment variable.", file=sys.stderr)
         sys.exit(2)
         
-    print(f"Running OCR on {input_path} using Tesseract: {tesseract_cmd}")
+    print(f"Running Advanced OCR on {input_path} using Tesseract: {tesseract_cmd} for output format: {output_type}")
     
     # Mathematical character post-processing cleanup function
     def clean_ocr(text):
         # 1. Correct projection operator π (pi) misrecognized as n or m
         text = re.sub(r'\b([nm])([A-Z][a-z]+)\b', lambda m: 'π' + m.group(2), text)
         text = re.sub(r'\b([nm])([A-Z][a-z]+)\(', lambda m: 'π' + m.group(2) + '(', text)
-        
         # 2. Correct >= (greater than or equal) misrecognized as Sigma or duplicated digit
         text = re.sub(r'(\b[a-zA-Z_][a-zA-Z0-9_]*\s+)[ΣΣ]\s*(\d+)', r'\1>= \2', text)
         text = re.sub(r'(\b[a-zA-Z_][a-zA-Z0-9_]*\s+)(\d+)\s+\2\b', r'\1>= \2', text)
-        
         # 3. Clean up other common relational algebra math symbol misrecognitions
         text = re.sub(r'\b(Pd|bd|pa|Ρᾷ)\b', '⋈', text)
         return text
 
-    # Set up custom local tessdata directory to support grc (Greek) for math symbols
     tessdata_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tessdata")
-    
-    # Programmatically copy configs folder from system tessdata to local tessdata if missing
     system_tessdata = os.path.join(os.path.dirname(tesseract_cmd), "tessdata")
     if os.path.exists(system_tessdata):
         system_configs = os.path.join(system_tessdata, "configs")
@@ -831,103 +826,887 @@ def perform_ocr(input_path, output_path, output_type):
         langs = "eng+grc"
         extra_args = ["--tessdata-dir", tessdata_dir, "-l", langs]
 
-    # Check if input is image or PDF
     is_pdf = input_path.lower().endswith('.pdf')
+    temp_files = []
     
+    # Extract page images
     if is_pdf:
         doc = fitz.open(input_path)
-        temp_files = []
-        
-        if output_type == 'text':
-            full_text = []
-            for i in range(len(doc)):
-                page = doc.load_page(i)
-                pix = page.get_pixmap(dpi=200)
-                img_path = f"temp_ocr_p{i}_{os.getpid()}.png"
-                pix.save(img_path)
-                temp_files.append(img_path)
-                
-                # Output text file base name
-                txt_base = f"temp_ocr_out_p{i}_{os.getpid()}"
-                
-                # Run tesseract with extra_args positioned correctly first
-                cmd = [tesseract_cmd] + extra_args + [img_path, txt_base]
-                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-                
-                txt_file = txt_base + ".txt"
-                if os.path.exists(txt_file):
-                    with open(txt_file, 'r', encoding='utf-8') as f:
-                        full_text.append(clean_ocr(f.read()))
-                    os.remove(txt_file)
-            
-            # Save final combined text
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write("\n\n--- PAGE BREAK ---\n\n".join(full_text))
-                
-        elif output_type == 'pdf':
-            # Create a searchable PDF by running OCR page by page and merging
-            pdf_merger = fitz.open()
-            for i in range(len(doc)):
-                page = doc.load_page(i)
-                pix = page.get_pixmap(dpi=200)
-                img_path = f"temp_ocr_p{i}_{os.getpid()}.png"
-                pix.save(img_path)
-                temp_files.append(img_path)
-                
-                pdf_base = f"temp_ocr_out_p{i}_{os.getpid()}"
-                
-                # Run tesseract config 'pdf' with options positioned correctly first
-                cmd = [tesseract_cmd] + extra_args + [img_path, pdf_base, "pdf"]
-                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-                
-                page_pdf = pdf_base + ".pdf"
-                if os.path.exists(page_pdf):
-                    page_doc = fitz.open(page_pdf)
-                    pdf_merger.insert_pdf(page_doc)
-                    page_doc.close()
-                    os.remove(page_pdf)
-            
-            pdf_merger.save(output_path)
-            pdf_merger.close()
-            
+        for i in range(len(doc)):
+            page = doc.load_page(i)
+            pix = page.get_pixmap(dpi=200)
+            img_path = f"temp_ocr_p{i}_{os.getpid()}.png"
+            pix.save(img_path)
+            temp_files.append((i, img_path))
         doc.close()
+    else:
+        temp_files.append((0, input_path))
+
+    # Perform OCR based on output type
+    if output_type == 'pdf':
+        pdf_merger = fitz.open()
+        for idx, img_path in temp_files:
+            pdf_base = f"temp_ocr_out_p{idx}_{os.getpid()}"
+            cmd = [tesseract_cmd] + extra_args + [img_path, pdf_base, "pdf"]
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            page_pdf = pdf_base + ".pdf"
+            if os.path.exists(page_pdf):
+                page_doc = fitz.open(page_pdf)
+                pdf_merger.insert_pdf(page_doc)
+                page_doc.close()
+                os.remove(page_pdf)
+        pdf_merger.save(output_path)
+        pdf_merger.close()
         
-        # Cleanup page images
-        for temp_file in temp_files:
+    elif output_type == 'docx':
+        # Create searchable PDF, then convert to docx
+        temp_searchable = f"temp_searchable_{os.getpid()}.pdf"
+        pdf_merger = fitz.open()
+        for idx, img_path in temp_files:
+            pdf_base = f"temp_ocr_out_p{idx}_{os.getpid()}"
+            cmd = [tesseract_cmd] + extra_args + [img_path, pdf_base, "pdf"]
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            page_pdf = pdf_base + ".pdf"
+            if os.path.exists(page_pdf):
+                page_doc = fitz.open(page_pdf)
+                pdf_merger.insert_pdf(page_doc)
+                page_doc.close()
+                os.remove(page_pdf)
+        pdf_merger.save(temp_searchable)
+        pdf_merger.close()
+        
+        # Convert PDF to DOCX using pdf2docx monkey-patched methods
+        convert_pdf_to_docx(temp_searchable, output_path)
+        if os.path.exists(temp_searchable):
+            os.remove(temp_searchable)
+            
+    elif output_type == 'text':
+        full_text = []
+        for idx, img_path in temp_files:
+            txt_base = f"temp_ocr_out_p{idx}_{os.getpid()}"
+            cmd = [tesseract_cmd] + extra_args + [img_path, txt_base]
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            txt_file = txt_base + ".txt"
+            if os.path.exists(txt_file):
+                with open(txt_file, 'r', encoding='utf-8') as f:
+                    full_text.append(clean_ocr(f.read()))
+                os.remove(txt_file)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write("\n\n--- PAGE BREAK ---\n\n".join(full_text))
+            
+    elif output_type == 'html':
+        html_pages = []
+        for idx, img_path in temp_files:
+            hocr_base = f"temp_ocr_out_p{idx}_{os.getpid()}"
+            cmd = [tesseract_cmd] + extra_args + [img_path, hocr_base, "hocr"]
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            hocr_file = hocr_base + ".hocr"
+            if os.path.exists(hocr_file):
+                with open(hocr_file, 'r', encoding='utf-8') as f:
+                    html_pages.append(f.read())
+                os.remove(hocr_file)
+        
+        combined_html = "<html><head><title>OCR Reconstructed Document</title></head><body>"
+        for page_content in html_pages:
+            combined_html += f"<div class='ocr_page'>{page_content}</div><hr/>"
+        combined_html += "</body></html>"
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(combined_html)
+            
+    elif output_type == 'json':
+        import json
+        from PIL import Image
+        json_data = {
+            "confidence_average": 0.0,
+            "total_words": 0,
+            "pages": []
+        }
+        total_conf = 0.0
+        word_count = 0
+        
+        for idx, img_path in temp_files:
+            tsv_base = f"temp_ocr_out_p{idx}_{os.getpid()}"
+            cmd = [tesseract_cmd] + extra_args + [img_path, tsv_base, "tsv"]
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            tsv_file = tsv_base + ".tsv"
+            
+            page_words = []
+            if os.path.exists(tsv_file):
+                with open(tsv_file, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                
+                headers = lines[0].strip().split('\t')
+                for line in lines[1:]:
+                    parts = line.strip().split('\t')
+                    if len(parts) < len(headers):
+                        continue
+                    row = dict(zip(headers, parts))
+                    text = row.get("text", "").strip()
+                    conf = float(row.get("conf", "-1"))
+                    
+                    if text and conf >= 0:
+                        page_words.append({
+                            "text": text,
+                            "confidence": conf,
+                            "bbox": [
+                                int(row.get("left", 0)),
+                                int(row.get("top", 0)),
+                                int(row.get("width", 0)),
+                                int(row.get("height", 0))
+                            ]
+                        })
+                        total_conf += conf
+                        word_count += 1
+                os.remove(tsv_file)
+            
+            page_width, page_height = 612, 792
             try:
-                os.remove(temp_file)
+                im = Image.open(img_path)
+                page_width, page_height = im.size
             except Exception:
                 pass
-    else:
-        # Input is an image (PNG, JPG, JPEG, etc.)
-        output_base = os.path.splitext(output_path)[0]
+                
+            json_data["pages"].append({
+                "page_index": idx,
+                "width": page_width,
+                "height": page_height,
+                "words": page_words
+            })
         
-        if output_type == 'text':
-            # Run tesseract with extra_args positioned correctly first
-            cmd = [tesseract_cmd] + extra_args + [input_path, output_base]
-            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-            # Tesseract automatically appends .txt
-            txt_out = output_base + ".txt"
-            if os.path.exists(txt_out):
-                with open(txt_out, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                cleaned_content = clean_ocr(content)
-                with open(output_path, 'w', encoding='utf-8') as f:
-                    f.write(cleaned_content)
-                if txt_out != output_path:
-                    os.remove(txt_out)
-        elif output_type == 'pdf':
-            # Run tesseract config 'pdf' with extra_args positioned correctly first
-            cmd = [tesseract_cmd] + extra_args + [input_path, output_base, "pdf"]
-            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-            # Tesseract automatically appends .pdf
-            generated_pdf = output_base + ".pdf"
-            if os.path.exists(generated_pdf) and generated_pdf != output_path:
-                if os.path.exists(output_path):
-                    os.remove(output_path)
-                os.rename(generated_pdf, output_path)
+        if word_count > 0:
+            json_data["confidence_average"] = round(total_conf / word_count, 2)
+        json_data["total_words"] = word_count
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(json_data, f, indent=2)
 
+    # Clean up temp image files (only if we converted a PDF)
+    if is_pdf:
+        for _, img_path in temp_files:
+            try:
+                os.remove(img_path)
+            except Exception:
+                pass
     print("OCR task finished successfully.")
+
+def compress_pdf(input_path, output_path, level, custom_dpi=None, custom_quality=None):
+    print(f"Compressing PDF: {input_path} -> {output_path} (preset: {level})")
+    doc = fitz.open(input_path)
+    
+    dpi = 200
+    quality = 85
+    if level == 'extreme':
+        dpi = 96
+        quality = 50
+    elif level == 'high':
+        dpi = 150
+        quality = 70
+    elif level == 'medium':  # 'recommended' maps to 'medium'
+        dpi = 220
+        quality = 82
+    elif level == 'low':
+        dpi = None
+        quality = 95
+    elif level == 'custom':
+        dpi = int(custom_dpi) if custom_dpi else 200
+        quality = int(custom_quality) if custom_quality else 85
+
+    # Clear metadata to reduce overhead
+    doc.set_metadata({})
+    
+    processed_images = {}
+    for page_idx in range(len(doc)):
+        page = doc[page_idx]
+        image_list = page.get_images(full=True)
+        
+        for img in image_list:
+            xref = img[0]
+            if xref in processed_images:
+                continue
+            
+            try:
+                base_image = doc.extract_image(xref)
+                if not base_image:
+                    continue
+                image_bytes = base_image["image"]
+                image_ext = base_image.get("ext", "").lower()
+                is_lossless = image_ext in ("png", "gif", "tiff")
+                
+                from PIL import Image
+                import io
+                
+                pil_img = Image.open(io.BytesIO(image_bytes))
+                
+                # Check resolution downsampling (only if dpi is set)
+                if dpi:
+                    rects = page.get_image_rects(xref)
+                    if rects:
+                        first_rect = rects[0]
+                        img_rect = first_rect[0] if isinstance(first_rect, tuple) else first_rect
+                        max_w = int(img_rect.width * (dpi / 72.0))
+                        max_h = int(img_rect.height * (dpi / 72.0))
+                    else:
+                        page_rect = page.rect
+                        max_w = int(page_rect.width * (dpi / 72.0))
+                        max_h = int(page_rect.height * (dpi / 72.0))
+                    
+                    max_w = max(max_w, 32)
+                    max_h = max(max_h, 32)
+                    
+                    w, h = pil_img.size
+                    scale_factor = min(max_w / w, max_h / h)
+                    
+                    # Only downsample if scaling factor reduces size
+                    if scale_factor < 1.0:
+                        new_size = (int(w * scale_factor), int(h * scale_factor))
+                        pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
+                
+                out_io = io.BytesIO()
+                # Retain lossless format if originally lossless or containing transparency
+                if is_lossless or pil_img.mode in ("RGBA", "LA") or (pil_img.mode == "P" and "transparency" in pil_img.info):
+                    pil_img.save(out_io, format="PNG", optimize=True)
+                else:
+                    pil_img.save(out_io, format="JPEG", quality=quality, optimize=True)
+                
+                new_data = out_io.getvalue()
+                # ONLY substitute if the compressed version is actually smaller
+                if len(new_data) < len(image_bytes):
+                    page.replace_image(xref, stream=new_data)
+                processed_images[xref] = True
+            except Exception as img_err:
+                print(f"Skipped image compression for xref {xref}: {img_err}")
+                
+    doc.save(
+        output_path,
+        garbage=4,
+        deflate=True,
+        clean=True
+    )
+    doc.close()
+    print("Compression complete.")
+
+def edit_pdf(input_path, output_path, meta_path):
+    print(f"Editing PDF: {input_path} -> {output_path} using meta {meta_path}")
+    import json
+    import base64
+    
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+        
+    doc = fitz.open(input_path)
+    
+    # 1. Page reorganization (pageOrder)
+    page_order = meta.get("pageOrder")
+    if page_order:
+        new_doc = fitz.open()
+        for idx in page_order:
+            if idx == -1:
+                # Add a blank page
+                new_doc.new_page(width=612, height=792)
+            elif 0 <= idx < len(doc):
+                new_doc.insert_pdf(doc, from_page=idx, to_page=idx)
+        doc.close()
+        doc = new_doc
+        
+    # 2. Page rotations
+    rotations = meta.get("rotations") or {}
+    for page_idx_str, rot_angle in rotations.items():
+        page_idx = int(page_idx_str)
+        if 0 <= page_idx < len(doc):
+            page = doc[page_idx]
+            page.set_rotation((page.rotation + rot_angle) % 360)
+            
+    # Helper to convert hex colors to RGB floats (0.0 to 1.0)
+    def hex_to_rgb(hex_str):
+        if not hex_str:
+            return (0, 0, 0)
+        h = hex_str.lstrip("#")
+        try:
+            return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+        except Exception:
+            return (0, 0, 0)
+            
+    # Helper to get font name
+    def get_font_name(font_family, bold, italic):
+        family = (font_family or "helvetica").lower()
+        if "times" in family:
+            if bold and italic: return "times-bolditalic"
+            if bold: return "times-bold"
+            if italic: return "times-italic"
+            return "times-roman"
+        elif "courier" in family:
+            if bold and italic: return "courier-boldoblique"
+            if bold: return "courier-bold"
+            if italic: return "courier-oblique"
+            return "courier"
+        else:
+            if bold and italic: return "helvetica-boldoblique"
+            if bold: return "helvetica-bold"
+            if italic: return "helvetica-oblique"
+            return "helvetica"
+
+    # 3. Process annotations
+    annotations = meta.get("annotations") or []
+    
+    # Pre-pass: group text annotations with their mask shapes to run true text-replacement (redaction)
+    locked_masks = {}
+    for ann in annotations:
+        if ann.get("type") == "shape" and ann.get("locked") and ann.get("bgColor") == "#ffffff":
+            key = (ann.get("page"), round(ann.get("x"), 1), round(ann.get("y"), 1))
+            locked_masks[key] = ann
+            
+    for ann in annotations:
+        page_idx = ann.get("page")
+        if not (0 <= page_idx < len(doc)):
+            continue
+            
+        page = doc[page_idx]
+        page_width = page.rect.width
+        page_height = page.rect.height
+        
+        # Coordinates in PDF points (but from bottom-left coordinate system in frontend)
+        # Convert to PyMuPDF's top-left coordinates:
+        w_val = ann.get("width") or 50.0
+        h_val = ann.get("height") or 30.0
+        x_val = ann.get("x") or 0.0
+        y_val = ann.get("y") or 0.0
+        
+        y0 = page_height - (y_val + h_val)
+        y1 = page_height - y_val
+        x0 = x_val
+        x1 = x_val + w_val
+        rect = fitz.Rect(x0, y0, x1, y1)
+        
+        ann_type = ann.get("type")
+        
+        # Check if this text annotation replaces existing text (true text editing)
+        is_replacement = False
+        if ann_type == "text" and ann.get("maskId"):
+            is_replacement = True
+        elif ann_type == "text":
+            key = (page_idx, round(x_val, 1), round(y_val, 1))
+            if key in locked_masks:
+                is_replacement = True
+                
+        if is_replacement:
+            # TRUE TEXT EDITING: Redact the original text region!
+            page.add_redact_annot(rect, fill=(1, 1, 1))
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+            
+        # Skip rendering locked masks since the redaction fill handles the white background
+        if ann_type == "shape" and ann.get("locked"):
+            continue
+            
+        if ann_type == "text":
+            bg_color = ann.get("bgColor")
+            if bg_color and bg_color != "transparent" and bg_color != "":
+                page.draw_rect(rect, color=hex_to_rgb(bg_color), fill=hex_to_rgb(bg_color), width=0)
+                
+            text = ann.get("text") or ""
+            font_size = ann.get("fontSize") or 12
+            font_name = get_font_name(ann.get("fontFamily"), ann.get("bold"), ann.get("italic"))
+            text_color = hex_to_rgb(ann.get("color"))
+            
+            align_map = {"left": 0, "center": 1, "right": 2}
+            alignment = align_map.get(ann.get("alignment") or "left", 0)
+            
+            page.insert_textbox(
+                rect,
+                text,
+                fontsize=font_size,
+                fontname=font_name,
+                color=text_color,
+                align=alignment
+            )
+            
+            # Underline / Strikethrough
+            if ann.get("underline") or ann.get("strikethrough"):
+                line_y = y0 + font_size * 0.95
+                if ann.get("underline"):
+                    page.draw_line(fitz.Point(x0, line_y), fitz.Point(x1, line_y), color=text_color, width=1)
+                if ann.get("strikethrough"):
+                    st_y = y0 + font_size * 0.5
+                    page.draw_line(fitz.Point(x0, st_y), fitz.Point(x1, st_y), color=text_color, width=1)
+                    
+        elif ann_type == "shape":
+            shape_type = ann.get("shapeType") or "rectangle"
+            bg_color = ann.get("bgColor")
+            fill_color = hex_to_rgb(bg_color) if (bg_color and bg_color != "transparent") else None
+            border_color = hex_to_rgb(ann.get("color")) if ann.get("color") else (0, 0, 0)
+            border_width = ann.get("borderWidth") if ann.get("borderWidth") is not None else 2
+            
+            if shape_type == "circle":
+                page.draw_ellipse(rect, color=border_color, fill=fill_color, width=border_width)
+            elif shape_type == "line":
+                page.draw_line(fitz.Point(x0, y0), fitz.Point(x1, y1), color=border_color, width=border_width)
+            else: # rectangle
+                page.draw_rect(rect, color=border_color, fill=fill_color, width=border_width)
+                
+        elif ann_type == "drawing":
+            color = hex_to_rgb(ann.get("color"))
+            thickness = ann.get("borderWidth") if ann.get("borderWidth") is not None else 2
+            paths = ann.get("paths")
+            if paths:
+                for path in paths:
+                    pts = [fitz.Point(pt["x"], page_height - pt["y"]) for pt in path]
+                    if len(pts) > 1:
+                        page.draw_polyline(pts, color=color, width=thickness)
+                        
+        elif ann_type == "image":
+            image_bytes = ann.get("imageBytes")
+            if image_bytes:
+                try:
+                    if "," in image_bytes:
+                        _, encoded = image_bytes.split(",", 1)
+                    else:
+                        encoded = image_bytes
+                    img_data = base64.b64decode(encoded)
+                    page.insert_image(rect, stream=img_data)
+                except Exception as img_err:
+                    print(f"Failed to embed image annotation: {img_err}")
+                    
+        elif ann_type == "highlight":
+            bg_color = ann.get("bgColor")
+            color = hex_to_rgb(bg_color) if bg_color else (1, 0.9, 0.2)
+            annot = page.add_highlight_annot(rect)
+            annot.set_colors(stroke=color)
+            annot.update()
+            
+        elif ann_type == "underline":
+            color = hex_to_rgb(ann.get("color")) or (0, 0, 1)
+            annot = page.add_underline_annot(rect)
+            annot.set_colors(stroke=color)
+            annot.update()
+            
+        elif ann_type == "strikethrough":
+            color = hex_to_rgb(ann.get("color")) or (1, 0, 0)
+            annot = page.add_strikeout_annot(rect)
+            annot.set_colors(stroke=color)
+            annot.update()
+            
+        elif ann_type == "note":
+            color = hex_to_rgb(ann.get("color")) or (0.93, 0.42, 0.3)
+            note_content = ann.get("noteContent") or ""
+            annot = page.add_text_annot(fitz.Point(x0, y0), note_content)
+            annot.set_colors(stroke=color)
+            annot.update()
+            
+        elif ann_type == "callout":
+            bg_color = ann.get("bgColor")
+            fill_color = hex_to_rgb(bg_color) if (bg_color and bg_color != "transparent") else (0.95, 0.95, 0.95)
+            border_color = hex_to_rgb(ann.get("color")) or (0.93, 0.42, 0.3)
+            border_width = ann.get("borderWidth") if ann.get("borderWidth") is not None else 1.5
+            
+            page.draw_rect(rect, color=border_color, fill=fill_color, width=border_width)
+            
+            text = ann.get("text") or ""
+            font_size = ann.get("fontSize") or 10
+            font_name = get_font_name(ann.get("fontFamily"), ann.get("bold"), ann.get("italic"))
+            text_color = hex_to_rgb(ann.get("color"))
+            
+            page.insert_textbox(
+                rect,
+                text,
+                fontsize=font_size,
+                fontname=font_name,
+                color=text_color,
+                align=0
+            )
+            
+    doc.save(output_path, garbage=3, deflate=True)
+    doc.close()
+    print("PDF editing and text replacement complete.")
+
+def repair_pdf(input_path, output_path):
+    print(f"Repairing PDF: {input_path} -> {output_path}")
+    import json
+    import shutil
+    
+    report = {
+        "errors_found": [],
+        "errors_repaired": [],
+        "remaining_warnings": []
+    }
+    
+    temp_patched = None
+    input_path_to_open = input_path
+    
+    # Stage 1: Pre-Flight Binary Validation and Patching
+    try:
+        with open(input_path, 'rb') as f:
+            data = f.read()
+            
+        original_len = len(data)
+        modified = False
+        
+        # 1. Look for %PDF- signature. Trim any leading garbage bytes before it.
+        pdf_start = data.find(b'%PDF-')
+        if pdf_start > 0:
+            data = data[pdf_start:]
+            report["errors_found"].append(f"Found leading garbage bytes ({pdf_start} bytes) before PDF header signature.")
+            report["errors_repaired"].append("Trimmed leading garbage bytes before PDF header signature.")
+            modified = True
+        elif pdf_start < 0:
+            # Missing header completely! Prepend standard PDF-1.4 header descriptor
+            data = b'%PDF-1.4\r\n' + data
+            report["errors_found"].append("Invalid PDF Header signature (completely missing).")
+            report["errors_repaired"].append("Injected standard '%PDF-1.4' header descriptor.")
+            modified = True
+            
+        # 2. Look for %%EOF signature. Trim any excessive trailing junk or append it if missing.
+        eof_idx = data.rfind(b'%%EOF')
+        if eof_idx >= 0:
+            trailing_len = len(data) - (eof_idx + 5)
+            if trailing_len > 10:
+                data = data[:eof_idx + 5]
+                report["errors_found"].append(f"Trailing garbage bytes ({trailing_len} bytes) found after %%EOF marker.")
+                report["errors_repaired"].append("Trimmed trailing garbage bytes after %%EOF marker.")
+                modified = True
+        else:
+            # Completely missing EOF! Append it
+            data = data + b'\r\n%%EOF\r\n'
+            report["errors_found"].append("Missing EOF marker.")
+            report["errors_repaired"].append("Appended standard EOF token block.")
+            modified = True
+            
+        if modified:
+            temp_patched = input_path + f".patched_{os.getpid()}"
+            with open(temp_patched, 'wb') as f:
+                f.write(data)
+            input_path_to_open = temp_patched
+            
+    except Exception as val_err:
+        report["errors_found"].append(f"Pre-flight binary analysis read error: {val_err}")
+    
+    # Stage 2 & 3: Structural Rebuild & Object Re-indexing
+    fitz.TOOLS.mupdf_warnings()  # Clear warning buffer
+    try:
+        doc = fitz.open(input_path_to_open)
+        load_warnings = fitz.TOOLS.mupdf_warnings()
+        if load_warnings:
+            for warn in load_warnings.split('\n'):
+                warn = warn.strip()
+                if warn:
+                    report["errors_found"].append(warn)
+                    report["errors_repaired"].append(f"Reconstructed malformed object: {warn}")
+                    
+        # Stage 4: Structure Optimization & Save
+        doc.save(
+            output_path,
+            garbage=4,
+            clean=True,
+            deflate=True
+        )
+        doc.close()
+        
+        # Test loading repaired output
+        test_doc = fitz.open(output_path)
+        page_count = len(test_doc)
+        test_doc.close()
+        
+        if page_count == 0:
+            raise ValueError("Repaired document contains 0 pages.")
+    except Exception as rep_err:
+        report["errors_found"].append(f"Fatal structural recovery exception: {rep_err}")
+        # Fall back to copy
+        try:
+            shutil.copyfile(input_path, output_path)
+        except Exception:
+            pass
+        report["remaining_warnings"].append(f"Multi-stage recovery failed to reconstruct structures: {rep_err}")
+    finally:
+        if temp_patched and os.path.exists(temp_patched):
+            try:
+                os.remove(temp_patched)
+            except Exception:
+                pass
+        
+    if not report["errors_found"]:
+        report["errors_repaired"].append("Verified cross-reference table and rebuilt structures successfully.")
+        
+    # Write report file alongside repaired output
+    report_path = output_path + ".report.json"
+    with open(report_path, 'w', encoding='utf-8') as rf:
+        json.dump(report, rf, indent=2)
+    print("Repair complete.")
+
+def detect_form_fields(input_path, output_path):
+    print(f"Detecting form fields: {input_path} -> {output_path}")
+    import json
+    doc = fitz.open(input_path)
+    fields = []
+    
+    for page_idx in range(len(doc)):
+        page = doc[page_idx]
+        page_width = page.rect.width
+        page_height = page.rect.height
+        
+        for widget in page.widgets():
+            ftype = widget.field_type
+            rect = widget.rect
+            
+            # Map layout rect to page percentages
+            x = (rect.x0 / page_width) * 100
+            y = (rect.y0 / page_height) * 100
+            w = ((rect.x1 - rect.x0) / page_width) * 100
+            h = ((rect.y1 - rect.y0) / page_height) * 100
+            
+            field_type = "text"
+            options = []
+            
+            if ftype == 1:
+                field_type = "signature"
+            elif ftype == 2:
+                field_type = "checkbox"
+                # Some checkbox fields represent radio buttons in Acrobat PDF spec
+                if widget.is_commit() or "radio" in (widget.field_name or "").lower():
+                    field_type = "radio"
+            elif ftype == 3:
+                field_type = "dropdown"
+                options = widget.choice_values() if hasattr(widget, "choice_values") else []
+            else:
+                field_type = "text"
+                if "date" in (widget.field_name or "").lower():
+                    field_type = "date"
+                    
+            fields.append({
+                "id": widget.field_name or f"field_{page_idx}_{len(fields)}",
+                "page": page_idx,
+                "type": field_type,
+                "x": x,
+                "y": y,
+                "width": w,
+                "height": h,
+                "name": widget.field_name or f"field_{page_idx}_{len(fields)}",
+                "value": widget.field_value or "",
+                "options": options,
+                "required": widget.is_required() if hasattr(widget, "is_required") else False
+            })
+            
+    doc.close()
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(fields, f, indent=2)
+    print("Form field detection complete.")
+
+def compare_pdfs(pdf1_path, pdf2_path, output_diff_pdf, output_report_json, output_report_html):
+    print(f"Comparing PDFs: {pdf1_path} vs {pdf2_path}")
+    import json
+    import difflib
+    from PIL import Image, ImageChops
+    
+    doc1 = fitz.open(pdf1_path)
+    doc2 = fitz.open(pdf2_path)
+    
+    report = {
+        "summary": {
+            "total_differences": 0,
+            "added": 0,
+            "removed": 0,
+            "modified": 0
+        },
+        "differences": []
+    }
+    
+    # Open visual copies to highlight modifications
+    highlight_doc1 = fitz.open(pdf1_path)
+    highlight_doc2 = fitz.open(pdf2_path)
+    
+    max_pages = max(len(doc1), len(doc2))
+    for page_idx in range(max_pages):
+        if page_idx < len(doc1) and page_idx < len(doc2):
+            p1 = doc1[page_idx]
+            p2 = doc2[page_idx]
+            
+            words1 = p1.get_text("words")
+            words2 = p2.get_text("words")
+            
+            text1_list = [w[4] for w in words1]
+            text2_list = [w[4] for w in words2]
+            
+            sm = difflib.SequenceMatcher(None, text1_list, text2_list)
+            opcodes = sm.get_opcodes()
+            
+            hp1 = highlight_doc1[page_idx]
+            hp2 = highlight_doc2[page_idx]
+            
+            for tag, i1, i2, j1, j2 in opcodes:
+                if tag == 'replace':
+                    report["summary"]["modified"] += 1
+                    for idx in range(i1, i2):
+                        w = words1[idx]
+                        rect = fitz.Rect(w[0], w[1], w[2], w[3])
+                        hp1.add_highlight_annot(rect).set_colors(stroke=(1.0, 0.9, 0.2))
+                        report["differences"].append({
+                            "page": page_idx,
+                            "type": "text_modified_removed",
+                            "content": w[4],
+                            "bbox": [w[0], w[1], w[2], w[3]]
+                        })
+                    for idx in range(j1, j2):
+                        w = words2[idx]
+                        rect = fitz.Rect(w[0], w[1], w[2], w[3])
+                        hp2.add_highlight_annot(rect).set_colors(stroke=(1.0, 0.9, 0.2))
+                        report["differences"].append({
+                            "page": page_idx,
+                            "type": "text_modified_added",
+                            "content": w[4],
+                            "bbox": [w[0], w[1], w[2], w[3]]
+                        })
+                elif tag == 'delete':
+                    report["summary"]["removed"] += 1
+                    for idx in range(i1, i2):
+                        w = words1[idx]
+                        rect = fitz.Rect(w[0], w[1], w[2], w[3])
+                        hp1.add_highlight_annot(rect).set_colors(stroke=(1.0, 0.2, 0.2))
+                        # Highlight deletion coordinates on modified page as a red rectangle with a light red fill
+                        hp2.add_rect_annot(rect).set_colors(stroke=(1.0, 0.2, 0.2), fill=(1.0, 0.85, 0.85))
+                        report["differences"].append({
+                            "page": page_idx,
+                            "type": "text_removed",
+                            "content": w[4],
+                            "bbox": [w[0], w[1], w[2], w[3]]
+                        })
+                elif tag == 'insert':
+                    report["summary"]["added"] += 1
+                    for idx in range(j1, j2):
+                        w = words2[idx]
+                        rect = fitz.Rect(w[0], w[1], w[2], w[3])
+                        hp2.add_highlight_annot(rect).set_colors(stroke=(0.2, 1.0, 0.2))
+                        report["differences"].append({
+                            "page": page_idx,
+                            "type": "text_added",
+                            "content": w[4],
+                            "bbox": [w[0], w[1], w[2], w[3]]
+                        })
+            
+            # Visual layout pixel comparison
+            try:
+                pix1 = p1.get_pixmap(dpi=72)
+                pix2 = p2.get_pixmap(dpi=72)
+                if pix1.width == pix2.width and pix1.height == pix2.height:
+                    img1 = Image.frombytes("RGB", [pix1.width, pix1.height], pix1.samples)
+                    img2 = Image.frombytes("RGB", [pix2.width, pix2.height], pix2.samples)
+                    diff = ImageChops.difference(img1, img2)
+                    diff_box = diff.getbbox()
+                    if diff_box:
+                        rect = fitz.Rect(diff_box[0], diff_box[1], diff_box[2], diff_box[3])
+                        # Filter out overlaps with text diffs to prevent clutter
+                        hp2.add_rect_annot(rect).set_colors(stroke=(1.0, 0.5, 0.0))
+                        report["differences"].append({
+                            "page": page_idx,
+                            "type": "visual_difference",
+                            "content": "Visual shift / logo or image change detected.",
+                            "bbox": [rect.x0, rect.y0, rect.x1, rect.y1]
+                        })
+                        report["summary"]["total_differences"] += 1
+            except Exception as vis_err:
+                print(f"Visual compare skipped: {vis_err}")
+                
+        elif page_idx < len(doc1):
+            report["summary"]["removed"] += 1
+            report["differences"].append({
+                "page": page_idx,
+                "type": "page_removed",
+                "content": f"Page {page_idx + 1} completely removed."
+            })
+        else:
+            report["summary"]["added"] += 1
+            report["differences"].append({
+                "page": page_idx,
+                "type": "page_added",
+                "content": f"Page {page_idx + 1} completely added."
+            })
+            
+    report["summary"]["total_differences"] += (
+        report["summary"]["added"] + report["summary"]["removed"] + report["summary"]["modified"]
+    )
+    
+    # Save highlighted modified PDF as the main output
+    highlight_doc2.save(output_diff_pdf, garbage=4, deflate=True)
+    
+    # Save highlighted original PDF as the extra file (.original.pdf)
+    highlight_doc1_path = output_diff_pdf + ".original.pdf"
+    highlight_doc1.save(highlight_doc1_path, garbage=4, deflate=True)
+    
+    highlight_doc1.close()
+    highlight_doc2.close()
+    doc1.close()
+    doc2.close()
+    
+    # Save reports
+    with open(output_report_json, 'w', encoding='utf-8') as jf:
+        json.dump(report, jf, indent=2)
+        
+    html_content = f"""<html>
+<head>
+    <title>PDF Comparison Report</title>
+    <style>
+        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 40px; background-color: #f8fafc; color: #1e293b; }}
+        h1 {{ color: #0f172a; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }}
+        .summary-card {{ display: flex; gap: 20px; margin-bottom: 30px; }}
+        .stat-box {{ flex: 1; padding: 20px; border-radius: 12px; background: white; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); text-align: center; border: 1px solid #e2e8f0; }}
+        .stat-num {{ font-size: 2rem; font-weight: bold; margin-bottom: 5px; }}
+        .stat-label {{ font-size: 0.875rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }}
+        .diff-list {{ background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }}
+        .diff-item {{ padding: 12px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center; }}
+        .diff-item:last-child {{ border-bottom: none; }}
+        .badge {{ padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }}
+        .badge-added {{ background-color: #dcfce7; color: #15803d; }}
+        .badge-removed {{ background-color: #fee2e2; color: #b91c1c; }}
+        .badge-modified {{ background-color: #fef9c3; color: #a16207; }}
+        .badge-visual {{ background-color: #f0fdf4; color: #166534; }}
+    </style>
+</head>
+<body>
+    <h1>Document Comparison Report</h1>
+    <div class="summary-card">
+        <div class="stat-box" style="border-top: 4px solid #3b82f6;">
+            <div class="stat-num">{report["summary"]["total_differences"]}</div>
+            <div class="stat-label">Total Differences</div>
+        </div>
+        <div class="stat-box" style="border-top: 4px solid #22c55e;">
+            <div class="stat-num" style="color: #22c55e;">{report["summary"]["added"]}</div>
+            <div class="stat-label">Added Items</div>
+        </div>
+        <div class="stat-box" style="border-top: 4px solid #ef4444;">
+            <div class="stat-num" style="color: #ef4444;">{report["summary"]["removed"]}</div>
+            <div class="stat-label">Removed Items</div>
+        </div>
+        <div class="stat-box" style="border-top: 4px solid #eab308;">
+            <div class="stat-num" style="color: #eab308;">{report["summary"]["modified"]}</div>
+            <div class="stat-label">Modified Items</div>
+        </div>
+    </div>
+    
+    <h2>Change Details Log</h2>
+    <div class="diff-list">
+"""
+    for diff in report["differences"]:
+        badge_class = "badge-modified"
+        if "added" in diff["type"]:
+            badge_class = "badge-added"
+        elif "removed" in diff["type"]:
+            badge_class = "badge-removed"
+        elif "visual" in diff["type"]:
+            badge_class = "badge-visual"
+            
+        html_content += f"""
+        <div class="diff-item">
+            <div>
+                <strong>Page {diff["page"] + 1}:</strong> 
+                <span style="margin-left: 10px; font-family: monospace;">"{diff.get("content", "")}"</span>
+            </div>
+            <span class="badge {badge_class}">{diff["type"].replace('text_', '')}</span>
+        </div>
+"""
+    html_content += """
+    </div>
+</body>
+</html>
+"""
+    with open(output_report_html, 'w', encoding='utf-8') as hf:
+        hf.write(html_content)
+    print("Comparison complete.")
 
 def preprocess_excel(input_path, output_path):
     print(f"Preprocessing Excel file: {input_path} -> {output_path}")
@@ -1048,10 +1827,19 @@ def convert_office_to_pdf(input_path, output_path):
 
 def main():
     parser = argparse.ArgumentParser(description="DocRIt Python Conversion Worker")
-    parser.add_argument("--task", required=True, choices=["pdf-to-docx", "pdf-to-xlsx", "pdf-to-pptx", "ocr", "preprocess-excel", "office-to-pdf"])
+    parser.add_argument("--task", required=True, choices=["pdf-to-docx", "pdf-to-xlsx", "pdf-to-pptx", "ocr", "preprocess-excel", "office-to-pdf", "compress", "repair", "detect-forms", "compare", "edit"])
     parser.add_argument("--input", required=True, help="Path to input document")
     parser.add_argument("--output", required=True, help="Path to write converted output document")
-    parser.add_argument("--ocr-type", default="text", choices=["text", "pdf"], help="For OCR task: text (txt file) or pdf (searchable PDF)")
+    parser.add_argument("--ocr-type", default="text", choices=["text", "pdf", "docx", "html", "json"], help="OCR output format")
+    
+    # Extra arguments for advanced tasks
+    parser.add_argument("--level", default="recommended", choices=["low", "medium", "high", "extreme", "custom"], help="Compression level preset")
+    parser.add_argument("--dpi", type=int, help="Custom downsampling DPI")
+    parser.add_argument("--quality", type=int, help="Custom JPEG quality")
+    parser.add_argument("--input2", help="Secondary PDF path for document comparison")
+    parser.add_argument("--report-json", help="Path to write compare JSON report")
+    parser.add_argument("--report-html", help="Path to write compare HTML report")
+    parser.add_argument("--extra", help="Path to JSON metadata payload (e.g. annotations for edit task)")
     
     args = parser.parse_args()
     
@@ -1072,6 +1860,20 @@ def main():
             preprocess_excel(args.input, args.output)
         elif args.task == "office-to-pdf":
             convert_office_to_pdf(args.input, args.output)
+        elif args.task == "compress":
+            compress_pdf(args.input, args.output, args.level, args.dpi, args.quality)
+        elif args.task == "repair":
+            repair_pdf(args.input, args.output)
+        elif args.task == "detect-forms":
+            detect_form_fields(args.input, args.output)
+        elif args.task == "edit":
+            if not args.extra:
+                raise ValueError("Edit task requires --extra argument with JSON path.")
+            edit_pdf(args.input, args.output, args.extra)
+        elif args.task == "compare":
+            if not args.input2 or not args.report_json or not args.report_html:
+                raise ValueError("Compare task requires --input2, --report-json, and --report-html arguments.")
+            compare_pdfs(args.input, args.input2, args.output, args.report_json, args.report_html)
         sys.exit(0)
     except Exception as e:
         import traceback

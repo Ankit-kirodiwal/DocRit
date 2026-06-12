@@ -208,10 +208,10 @@ const ExtractPages: React.FC<ExtractPagesProps> = ({ onBack }) => {
                               display: 'flex', 
                               flexDirection: 'column', 
                               alignItems: 'center', 
-                              background: isSelected ? 'rgba(238, 108, 77, 0.08)' : 'rgba(255, 255, 255, 0.08)', 
+                              background: isSelected ? 'rgba(16, 185, 129, 0.08)' : 'rgba(255, 255, 255, 0.08)', 
                               padding: '1rem', 
                               borderRadius: '8px', 
-                              border: isSelected ? '2px solid var(--color-coral)' : '1px solid var(--color-border)',
+                              border: isSelected ? '2px solid var(--color-green)' : '1px solid var(--color-border)',
                               cursor: 'pointer',
                               transition: 'all 0.2s ease'
                             }}
@@ -229,12 +229,12 @@ const ExtractPages: React.FC<ExtractPagesProps> = ({ onBack }) => {
                                   width: '16px',
                                   height: '16px',
                                   cursor: 'pointer',
-                                  accentColor: 'var(--color-coral)'
+                                  accentColor: 'var(--color-green)'
                                 }}
                               />
                             </div>
                             <img src={page.thumbnailUrl} alt={`Page ${page.originalIndex + 1}`} style={{ maxWidth: '100px', height: 'auto', border: '1px solid var(--color-border)', borderRadius: '4px', marginBottom: '0.5rem', marginTop: '0.5rem' }} />
-                            <span style={{ fontSize: '0.85rem', color: isSelected ? 'var(--color-coral)' : 'var(--text-primary)', fontWeight: isSelected ? 'bold' : 'normal' }}>Page {page.originalIndex + 1}</span>
+                            <span style={{ fontSize: '0.85rem', color: isSelected ? 'var(--color-green)' : 'var(--text-primary)', fontWeight: isSelected ? 'bold' : 'normal' }}>Page {page.originalIndex + 1}</span>
                           </div>
                         );
                       })}
@@ -287,9 +287,9 @@ const ExtractPages: React.FC<ExtractPagesProps> = ({ onBack }) => {
                     display: 'inline-flex', 
                     alignItems: 'center', 
                     gap: '0.6rem',
-                    backgroundColor: 'var(--color-coral)',
-                    borderColor: 'var(--color-coral)',
-                    boxShadow: '0 4px 15px rgba(238, 108, 77, 0.25)'
+                    backgroundColor: 'var(--color-green)',
+                    borderColor: 'var(--color-green)',
+                    boxShadow: '0 4px 15px rgba(16, 185, 129, 0.25)'
                   }}
                 >
                   <Download size={18} /> Download PDF
@@ -316,7 +316,7 @@ const ExtractPages: React.FC<ExtractPagesProps> = ({ onBack }) => {
           style={{ 
             width: '100%', 
             marginTop: '1.5rem', 
-            background: selectedPages.size > 0 ? 'var(--color-coral)' : 'var(--bg-glass)',
+            background: selectedPages.size > 0 ? 'var(--color-green)' : 'var(--bg-glass)',
             color: '#fff', 
             border: 'none', 
             display: 'flex', 

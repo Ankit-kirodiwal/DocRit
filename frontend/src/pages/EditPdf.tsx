@@ -5,7 +5,8 @@ import {
   ZoomIn, ZoomOut, Maximize2, Move, ChevronUp, ChevronDown,
   Undo, Redo, AlignLeft, AlignCenter, AlignRight,
   Link as LinkIcon, Columns, Highlighter, MessageSquare, HelpCircle,
-  Plus, Check, Underline as UnderlineIcon, Settings, Scissors, Edit3
+  Plus, Check, Underline as UnderlineIcon, Settings, Scissors, Edit3,
+  RotateCw
 } from 'lucide-react';
 import FileUpload from '../components/FileUpload';
 import ProgressBar from '../components/ProgressBar';
@@ -18,13 +19,14 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 interface EditPdfProps {
+  mode?: 'edit' | 'forms';
   onBack: () => void;
 }
 
 interface Annotation {
   id: string;
   page: number;
-  type: 'text' | 'image' | 'shape' | 'drawing' | 'highlight' | 'underline' | 'strikethrough' | 'note' | 'callout';
+  type: 'text' | 'image' | 'shape' | 'drawing' | 'highlight' | 'underline' | 'strikethrough' | 'note' | 'callout' | 'formField';
   x: number; // percentage (0 - 100)
   y: number; // percentage (0 - 100)
   width: number; // percentage
@@ -50,6 +52,15 @@ interface Annotation {
   borderRadius?: number; // border radius percentage (0 - 50)
   locked?: boolean;
   maskId?: string;
+
+  // PDF Interactive Form fields
+  fieldName?: string;
+  fieldType?: 'text' | 'checkbox' | 'radio' | 'dropdown' | 'date' | 'signature';
+  fieldValue?: string;
+  fieldOptions?: string[];
+  fieldRequired?: boolean;
+  fieldGroup?: string;
+  fieldOptionName?: string;
 }
 
 interface DragState {
@@ -64,11 +75,22 @@ interface DragState {
   startHeight: number;
 }
 
-const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
+const EditPdf: React.FC<EditPdfProps> = ({ mode = 'edit', onBack }) => {
   const [files, setFiles] = useState<File[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+
+  // Batch form filling states
+  const [fillMode, setFillMode] = useState<'single' | 'batch'>('single');
+  const [dataFile, setDataFile] = useState<File | null>(null);
+  const [dataHeaders, setDataHeaders] = useState<string[]>([]);
+  const [fieldMapping, setFieldMapping] = useState<{ [key: string]: string }>({});
+
+  // Layout reorganization and form flattening states
+  const [pageOrder, setPageOrder] = useState<number[]>([]);
+  const [rotations, setRotations] = useState<{ [key: number]: number }>({});
+  const [flatten, setFlatten] = useState(false);
 
   // PDF.js State
   const [pdfDoc, setPdfDoc] = useState<any>(null);
@@ -164,6 +186,9 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
       setHistory([[]]);
       setHistoryStep(0);
       setSelectedId(null);
+      setPageOrder([]);
+      setRotations({});
+      setFlatten(false);
       return;
     }
 
@@ -204,6 +229,14 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
 
         setPageDimensions(dims);
         setPageThumbnails(thumbs);
+        setPageOrder(Array.from({ length: pdf.numPages }, (_, i) => i));
+        setRotations({});
+
+        if (mode === 'forms') {
+          setTimeout(() => {
+            handleAutoDetectFields();
+          }, 200);
+        }
       } catch (err) {
         console.error('Error parsing PDF:', err);
         alert('Failed to load PDF. Make sure it is not password protected.');
@@ -217,16 +250,35 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
 
   // Render current PDF page
   useEffect(() => {
-    if (!pdfDoc) return;
+    if (!pdfDoc || pageOrder.length === 0) return;
 
     const renderPage = async () => {
       try {
-        const page = await pdfDoc.getPage(pageIndex + 1);
-        const scale = (zoom / 100) * 1.5;
-        const viewport = page.getViewport({ scale });
-
+        const origIdx = pageOrder[pageIndex];
         const canvas = canvasRef.current;
         if (!canvas) return;
+
+        if (origIdx === -1) {
+          // Render blank page
+          const scale = (zoom / 100) * 1.5;
+          const w = 612 * scale;
+          const h = 792 * scale;
+          canvas.width = w;
+          canvas.height = h;
+          const context = canvas.getContext('2d');
+          if (context) {
+            context.fillStyle = '#ffffff';
+            context.fillRect(0, 0, w, h);
+          }
+          setContainerSize({ width: w, height: h });
+          setPageTextContent([]);
+          return;
+        }
+
+        const page = await pdfDoc.getPage(origIdx + 1);
+        const scale = (zoom / 100) * 1.5;
+        const customRot = rotations[origIdx] || 0;
+        const viewport = page.getViewport({ scale, rotation: (page.rotate + customRot) % 360 });
 
         canvas.width = viewport.width;
         canvas.height = viewport.height;
@@ -264,7 +316,7 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
     };
 
     renderPage();
-  }, [pdfDoc, pageIndex, zoom]);
+  }, [pdfDoc, pageIndex, zoom, pageOrder, rotations]);
 
   // Panning functionality for Hand tool
   const handleViewerMouseDown = (e: React.MouseEvent) => {
@@ -958,6 +1010,233 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
     });
   };
 
+  // Page operations
+  const handleRotatePage = (listIdx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const origIdx = pageOrder[listIdx];
+    if (origIdx === -1) return;
+    setRotations(prev => ({
+      ...prev,
+      [origIdx]: ((prev[origIdx] || 0) + 90) % 360
+    }));
+  };
+
+  const handleMovePageUp = (listIdx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (listIdx === 0) return;
+    setPageOrder(prev => {
+      const next = [...prev];
+      const temp = next[listIdx];
+      next[listIdx] = next[listIdx - 1];
+      next[listIdx - 1] = temp;
+      return next;
+    });
+    setAnnotations(prev => prev.map(ann => {
+      if (ann.page === listIdx) return { ...ann, page: listIdx - 1 };
+      if (ann.page === listIdx - 1) return { ...ann, page: listIdx };
+      return ann;
+    }));
+    if (pageIndex === listIdx) {
+      setPageIndex(listIdx - 1);
+    } else if (pageIndex === listIdx - 1) {
+      setPageIndex(listIdx);
+    }
+  };
+
+  const handleMovePageDown = (listIdx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (listIdx === pageOrder.length - 1) return;
+    setPageOrder(prev => {
+      const next = [...prev];
+      const temp = next[listIdx];
+      next[listIdx] = next[listIdx + 1];
+      next[listIdx + 1] = temp;
+      return next;
+    });
+    setAnnotations(prev => prev.map(ann => {
+      if (ann.page === listIdx) return { ...ann, page: listIdx + 1 };
+      if (ann.page === listIdx + 1) return { ...ann, page: listIdx };
+      return ann;
+    }));
+    if (pageIndex === listIdx) {
+      setPageIndex(listIdx + 1);
+    } else if (pageIndex === listIdx + 1) {
+      setPageIndex(listIdx);
+    }
+  };
+
+  const handleDuplicatePage = (listIdx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setPageOrder(prev => {
+      const next = [...prev];
+      next.splice(listIdx + 1, 0, next[listIdx]);
+      return next;
+    });
+    setAnnotations(prev => {
+      const shifted = prev.map(ann => ann.page > listIdx ? { ...ann, page: ann.page + 1 } : ann);
+      const cloned = prev
+        .filter(ann => ann.page === listIdx)
+        .map(ann => ({
+          ...ann,
+          id: Math.random().toString(36).substring(2, 9),
+          page: listIdx + 1
+        }));
+      return [...shifted, ...cloned];
+    });
+  };
+
+  const handleDeletePage = (listIdx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (pageOrder.length <= 1) {
+      alert("A PDF must contain at least one page.");
+      return;
+    }
+    setPageOrder(prev => prev.filter((_, idx) => idx !== listIdx));
+    setAnnotations(prev => prev
+      .filter(ann => ann.page !== listIdx)
+      .map(ann => ann.page > listIdx ? { ...ann, page: ann.page - 1 } : ann)
+    );
+    if (pageIndex >= pageOrder.length - 1) {
+      setPageIndex(Math.max(0, pageOrder.length - 2));
+    }
+  };
+
+  const handleInsertBlankPage = (listIdx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setPageOrder(prev => {
+      const next = [...prev];
+      next.splice(listIdx + 1, 0, -1);
+      return next;
+    });
+    setAnnotations(prev => prev.map(ann => ann.page > listIdx ? { ...ann, page: ann.page + 1 } : ann));
+  };
+
+  const handleAddBlankPageAtStart = () => {
+    setPageOrder(prev => [-1, ...prev]);
+    setPageIndex(0);
+    setAnnotations(prev => prev.map(ann => ({ ...ann, page: ann.page + 1 })));
+  };
+
+  // Form fields builder actions
+  const handleAddField = (type: 'text' | 'checkbox' | 'radio' | 'dropdown' | 'date' | 'signature') => {
+    const newFieldAnn: Annotation = {
+      id: Math.random().toString(36).substring(2, 9),
+      page: pageIndex,
+      type: 'formField',
+      x: 35,
+      y: 40,
+      width: type === 'checkbox' || type === 'radio' ? 6 : 25,
+      height: type === 'checkbox' || type === 'radio' ? 4 : 5,
+      fieldName: `Field_${type}_${Math.random().toString(36).substring(7)}`,
+      fieldType: type,
+      fieldValue: '',
+      fieldOptions: type === 'dropdown' ? ['Option 1', 'Option 2'] : [],
+      fieldRequired: false,
+      fieldGroup: type === 'radio' ? 'RadioGroup1' : undefined,
+      fieldOptionName: type === 'radio' ? 'Option1' : undefined
+    };
+    const nextAnns = [...annotations, newFieldAnn];
+    setAnnotations(nextAnns);
+    saveToHistory(nextAnns);
+    setSelectedId(newFieldAnn.id);
+  };
+
+  const handleAutoDetectFields = async () => {
+    if (files.length === 0) return;
+    setIsProcessing(true);
+    setProgress(30);
+
+    const formData = new FormData();
+    formData.append('file', files[0]);
+
+    try {
+      const response = await api.post('/detect-forms', formData);
+      const fields = response.data.fields || [];
+      
+      const newAnns = fields.map((f: any) => ({
+        id: f.id || Math.random().toString(36).substring(2, 9),
+        page: f.page,
+        type: 'formField' as any,
+        x: f.x,
+        y: f.y,
+        width: f.width,
+        height: f.height,
+        fieldName: f.name,
+        fieldType: f.type,
+        fieldValue: f.value,
+        fieldOptions: f.options || [],
+        fieldRequired: !!f.required,
+        fieldGroup: f.group,
+        fieldOptionName: f.optionName
+      }));
+      
+      const mergedAnns = [...annotations.filter(ann => ann.type !== 'formField'), ...newAnns];
+      setAnnotations(mergedAnns);
+      saveToHistory(mergedAnns);
+      alert(`Successfully scanned PDF. Detected ${newAnns.length} interactive form fields!`);
+    } catch (err: any) {
+      console.error(err);
+      alert('Failed to detect form fields: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleSaveForm = async () => {
+    if (files.length === 0) return;
+    setIsProcessing(true);
+    setProgress(15);
+
+    const formFields = annotations
+      .filter(ann => ann.type === 'formField')
+      .map(ann => {
+        return {
+          page: ann.page,
+          type: ann.fieldType || 'text',
+          x: ann.x,
+          y: ann.y,
+          width: ann.width,
+          height: ann.height,
+          name: ann.fieldName || `field_${ann.page}_${ann.id}`,
+          value: ann.fieldValue || '',
+          options: ann.fieldOptions || [],
+          required: !!ann.fieldRequired,
+          group: ann.fieldGroup,
+          optionName: ann.fieldOptionName
+        };
+      });
+
+    const formData = new FormData();
+    formData.append('file', files[0]);
+    formData.append('fields', JSON.stringify(formFields));
+    formData.append('flatten', String(flatten));
+    formData.append('pageOrder', JSON.stringify(pageOrder));
+    formData.append('rotations', JSON.stringify(rotations));
+
+    try {
+      setProgress(50);
+      const response = await api.post('/save-forms', formData, {
+        responseType: 'blob',
+        onUploadProgress: (progressEvent) => {
+          const percent = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
+          setProgress(50 + percent * 0.4);
+        }
+      });
+
+      setProgress(90);
+      const blob = new Blob([response.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      setDownloadUrl(url);
+      setProgress(100);
+    } catch (err: any) {
+      console.error(err);
+      alert('Error saving PDF form fields: ' + (err.response?.data?.error || err.message));
+      setProgress(0);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   // Convert percentages coordinates to PDF points and save PDF
   const handleSaveChanges = async () => {
     if (files.length === 0) return;
@@ -965,7 +1244,8 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
     setProgress(15);
 
     const formattedAnnotations = annotations.map(ann => {
-      const dims = pageDimensions[ann.page] || { width: 612, height: 792 };
+      const origIdx = pageOrder[ann.page];
+      const dims = (origIdx !== -1 && pageDimensions[origIdx]) ? pageDimensions[origIdx] : { width: 612, height: 792 };
       
       const pdfX = (ann.x / 100) * dims.width;
       const pdfY = ((100 - (ann.y + ann.height)) / 100) * dims.height;
@@ -1012,6 +1292,8 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
     const formData = new FormData();
     formData.append('file', files[0]);
     formData.append('annotations', JSON.stringify(formattedAnnotations));
+    formData.append('pageOrder', JSON.stringify(pageOrder));
+    formData.append('rotations', JSON.stringify(rotations));
 
     try {
       setProgress(50);
@@ -1037,6 +1319,113 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
     }
   };
 
+  const handleBatchFillForms = async () => {
+    if (files.length === 0 || !dataFile) {
+      alert('Please upload a CSV or Excel data file.');
+      return;
+    }
+    setIsProcessing(true);
+    setProgress(15);
+
+    const formData = new FormData();
+    formData.append('file', files[0]);
+    formData.append('dataFile', dataFile);
+    formData.append('fieldMapping', JSON.stringify(fieldMapping));
+    formData.append('flatten', String(flatten));
+
+    try {
+      setProgress(50);
+      const response = await api.post('/batch-fill-forms', formData, {
+        responseType: 'blob',
+        onUploadProgress: (progressEvent) => {
+          const percent = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
+          setProgress(50 + percent * 0.4);
+        }
+      });
+
+      setProgress(90);
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const url = window.URL.createObjectURL(blob);
+      
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `batch_filled_${files[0].name.replace('.pdf', '')}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      setProgress(100);
+      alert('Batch form filling completed successfully! Your ZIP archive has been downloaded.');
+    } catch (err: any) {
+      console.error(err);
+      alert('Error in batch form filling: ' + (err.response?.data?.error || err.message));
+      setProgress(0);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleDataFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setDataFile(file);
+
+    if (file.name.endsWith('.csv')) {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const text = evt.target?.result as string;
+          const firstLine = text.split('\n')[0];
+          const headers = firstLine.split(',').map(h => h.trim().replace(/^["']|["']$/g, ''));
+          setDataHeaders(headers);
+          
+          const initialMapping: { [key: string]: string } = {};
+          const formFields = annotations.filter(ann => ann.type === 'formField');
+          formFields.forEach(f => {
+            const fieldName = f.fieldName || '';
+            const matchingHeader = headers.find(h => h.toLowerCase() === fieldName.toLowerCase());
+            if (matchingHeader) {
+              initialMapping[fieldName] = matchingHeader;
+            }
+          });
+          setFieldMapping(initialMapping);
+        } catch (err) {
+          console.error(err);
+          alert('Failed to parse CSV headers.');
+        }
+      };
+      reader.readAsText(file);
+    } else {
+      setIsProcessing(true);
+      setProgress(20);
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      try {
+        const response = await api.post('/parse-headers', formData);
+        const headers = response.data.headers || [];
+        setDataHeaders(headers);
+        
+        const initialMapping: { [key: string]: string } = {};
+        const formFields = annotations.filter(ann => ann.type === 'formField');
+        formFields.forEach(f => {
+          const fieldName = f.fieldName || '';
+          const matchingHeader = headers.find((h: string) => h.toLowerCase() === fieldName.toLowerCase());
+          if (matchingHeader) {
+            initialMapping[fieldName] = matchingHeader;
+          }
+        });
+        setFieldMapping(initialMapping);
+      } catch (err: any) {
+        console.error(err);
+        alert('Failed to parse file headers: ' + (err.response?.data?.error || err.message));
+      } finally {
+        setIsProcessing(false);
+        setProgress(0);
+      }
+    }
+  };
+
   const handleFilesSelected = (newFiles: File[]) => {
     if (newFiles.length > 0) {
       setFiles([newFiles[0]]);
@@ -1047,6 +1436,13 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
   const handleRemoveFile = () => {
     setFiles([]);
     setDownloadUrl(null);
+    setPageOrder([]);
+    setRotations({});
+    setFlatten(false);
+    setFillMode('single');
+    setDataFile(null);
+    setDataHeaders([]);
+    setFieldMapping({});
   };
 
   // Color Swatches Quick Palette
@@ -1062,7 +1458,7 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
           transition: border-color 0.15s ease, box-shadow 0.15s ease;
         }
         .annotation-item:hover {
-          border-color: rgba(238, 108, 77, 0.6) !important;
+          border-color: rgba(16, 185, 129, 0.6) !important;
           box-shadow: 0 4px 12px rgba(0,0,0,0.06);
         }
         
@@ -1137,8 +1533,8 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
         }
 
         .pdf-thumb-card.active {
-          border-color: var(--color-coral);
-          box-shadow: 0 4px 12px rgba(238, 108, 77, 0.15);
+          border-color: var(--color-green);
+          box-shadow: 0 4px 12px rgba(16, 185, 129, 0.15);
         }
 
         .pdf-thumb-img {
@@ -1232,7 +1628,7 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
         }
 
         .tool-btn.active, .prop-btn.active {
-          background-color: var(--color-coral);
+          background-color: var(--color-green);
           color: #ffffff;
         }
 
@@ -1340,8 +1736,8 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
         }
 
         .layer-item.active {
-          border-color: var(--color-coral);
-          background-color: rgba(238, 108, 77, 0.05);
+          border-color: var(--color-green);
+          background-color: rgba(16, 185, 129, 0.05);
         }
 
         .layer-title {
@@ -1434,7 +1830,7 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
         }
 
         .style-toggle-btn.active {
-          background-color: var(--color-coral);
+          background-color: var(--color-green);
           color: #ffffff;
         }
 
@@ -1501,6 +1897,36 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
         .note-bubble-wrapper:hover .note-tooltip {
           opacity: 1;
         }
+
+        @media (max-width: 768px) {
+          .pdf-left-sidebar {
+            position: absolute;
+            left: 0;
+            top: 64px;
+            bottom: 0;
+            z-index: 100;
+            width: 160px;
+            box-shadow: 4px 0 15px rgba(0,0,0,0.15);
+          }
+          .pdf-right-sidebar {
+            position: absolute;
+            right: 0;
+            top: 64px;
+            bottom: 0;
+            z-index: 100;
+            width: 280px;
+            box-shadow: -4px 0 15px rgba(0,0,0,0.15);
+          }
+          .pdf-canvas-viewer {
+            padding: 1rem;
+          }
+          .pdf-editor-toolbar {
+            overflow-x: auto;
+            white-space: nowrap;
+            padding: 0 0.5rem;
+            gap: 0.5rem;
+          }
+        }
       `}</style>
 
       {/* Main Workspace Layout */}
@@ -1566,17 +1992,106 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
           <>
             {/* 1. Left Sidebar page previews */}
             {showLeftSidebar && (
-              <div className="pdf-left-sidebar">
-                {pageThumbnails.map((thumb, idx) => (
-                  <div 
-                    key={idx} 
-                    className={`pdf-thumb-card ${pageIndex === idx ? 'active' : ''}`}
-                    onClick={() => setPageIndex(idx)}
-                  >
-                    <img src={thumb} className="pdf-thumb-img" alt={`Page ${idx + 1}`} />
-                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Page {idx + 1}</span>
-                  </div>
-                ))}
+              <div className="pdf-left-sidebar" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', padding: '0.75rem', overflowY: 'auto' }}>
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={handleAddBlankPageAtStart}
+                  style={{ width: '100%', fontSize: '0.75rem', padding: '0.4rem 0.5rem', display: 'flex', alignItems: 'center', gap: '0.3rem', justifyContent: 'center', borderRadius: '8px' }}
+                >
+                  <Plus size={14} /> Add Blank Page
+                </button>
+                
+                {pageOrder.map((origIdx, listIdx) => {
+                  const isSelected = pageIndex === listIdx;
+                  return (
+                    <div 
+                      key={listIdx} 
+                      className={`pdf-thumb-card ${isSelected ? 'active' : ''}`}
+                      onClick={() => setPageIndex(listIdx)}
+                      style={{ 
+                        position: 'relative',
+                        padding: '0.4rem',
+                        border: isSelected ? '1px solid var(--color-green)' : '1px solid var(--color-border)',
+                        borderRadius: '10px',
+                        background: isSelected ? 'rgba(16, 185, 129, 0.04)' : 'rgba(255,255,255,0.01)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {origIdx === -1 ? (
+                        <div style={{ width: '80px', height: '110px', backgroundColor: '#ffffff', border: '1px solid var(--color-border)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.7rem', fontWeight: 600 }}>
+                          Blank Page
+                        </div>
+                      ) : (
+                        <img 
+                          src={pageThumbnails[origIdx]} 
+                          className="pdf-thumb-img" 
+                          alt={`Page ${listIdx + 1}`} 
+                          style={{ 
+                            width: '80px', 
+                            height: 'auto', 
+                            borderRadius: '4px',
+                            transform: `rotate(${rotations[origIdx] || 0}deg)`,
+                            transition: 'transform 0.2s ease'
+                          }}
+                        />
+                      )}
+                      <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginTop: '0.3rem' }}>Page {listIdx + 1}</span>
+
+                      {/* Operations row below thumbnail */}
+                      <div style={{ display: 'flex', gap: '0.25rem', justifyContent: 'center', marginTop: '0.4rem', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '0.4rem', width: '100%' }}>
+                        <button 
+                          onClick={(e) => handleRotatePage(listIdx, e)}
+                          disabled={origIdx === -1}
+                          title="Rotate 90°"
+                          style={{ padding: '2px', background: 'transparent', border: 'none', cursor: origIdx === -1 ? 'default' : 'pointer', color: origIdx === -1 ? 'var(--text-muted)' : 'var(--text-secondary)' }}
+                        >
+                          <RotateCw size={12} />
+                        </button>
+                        <button 
+                          onClick={(e) => handleMovePageUp(listIdx, e)}
+                          disabled={listIdx === 0}
+                          title="Move Up"
+                          style={{ padding: '2px', background: 'transparent', border: 'none', cursor: listIdx === 0 ? 'default' : 'pointer', color: listIdx === 0 ? 'var(--text-muted)' : 'var(--text-secondary)' }}
+                        >
+                          <ChevronUp size={12} />
+                        </button>
+                        <button 
+                          onClick={(e) => handleMovePageDown(listIdx, e)}
+                          disabled={listIdx === pageOrder.length - 1}
+                          title="Move Down"
+                          style={{ padding: '2px', background: 'transparent', border: 'none', cursor: listIdx === pageOrder.length - 1 ? 'default' : 'pointer', color: listIdx === pageOrder.length - 1 ? 'var(--text-muted)' : 'var(--text-secondary)' }}
+                        >
+                          <ChevronDown size={12} />
+                        </button>
+                        <button 
+                          onClick={(e) => handleDuplicatePage(listIdx, e)}
+                          title="Duplicate Page"
+                          style={{ padding: '2px', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                        >
+                          <Plus size={12} />
+                        </button>
+                        <button 
+                          onClick={(e) => handleInsertBlankPage(listIdx, e)}
+                          title="Insert Blank After"
+                          style={{ padding: '2px', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                        >
+                          <FileCheck size={12} />
+                        </button>
+                        <button 
+                          onClick={(e) => handleDeletePage(listIdx, e)}
+                          disabled={pageOrder.length <= 1}
+                          title="Delete Page"
+                          style={{ padding: '2px', background: 'transparent', border: 'none', cursor: pageOrder.length <= 1 ? 'default' : 'pointer', color: pageOrder.length <= 1 ? 'var(--text-muted)' : '#ef4444' }}
+                        >
+                          <Trash size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
@@ -1591,9 +2106,9 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
                 >
                   <ArrowLeft size={16} /> Back
                 </button>
-
+ 
                 <span className="section-divider" style={{ margin: '0 0.25rem' }}></span>
-
+ 
                 {/* Left: Toggle Sidebar + Tab Selection */}
                 <button 
                   className={`tool-btn ${showLeftSidebar ? 'active' : ''}`} 
@@ -1603,21 +2118,27 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
                 >
                   <Columns size={18} />
                 </button>
-
-                <div className="tab-toggle-container">
-                  <button 
-                    className={`tab-toggle-btn ${activeTab === 'annotate' ? 'active' : ''}`} 
-                    onClick={() => { setActiveTab('annotate'); setActiveTool('hand'); }}
-                  >
-                    <Pencil size={14} /> Annotate
-                  </button>
-                  <button 
-                    className={`tab-toggle-btn ${activeTab === 'edit' ? 'active' : ''}`} 
-                    onClick={() => { setActiveTab('edit'); setActiveTool('hand'); }}
-                  >
-                    <Settings size={14} /> Edit 😃
-                  </button>
-                </div>
+ 
+                {mode === 'edit' ? (
+                  <div className="tab-toggle-container">
+                    <button 
+                      className={`tab-toggle-btn ${activeTab === 'annotate' ? 'active' : ''}`} 
+                      onClick={() => { setActiveTab('annotate'); setActiveTool('hand'); }}
+                    >
+                      <Pencil size={14} /> Annotate
+                    </button>
+                    <button 
+                      className={`tab-toggle-btn ${activeTab === 'edit' ? 'active' : ''}`} 
+                      onClick={() => { setActiveTab('edit'); setActiveTool('hand'); }}
+                    >
+                      <Settings size={14} /> Edit 😃
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-primary)', fontWeight: 600, fontSize: '0.9rem', marginRight: '0.5rem' }}>
+                    <Sparkles size={16} style={{ color: 'var(--color-green)' }} /> PDF Form Designer
+                  </div>
+                )}
 
                 <span className="section-divider"></span>
 
@@ -1632,129 +2153,194 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
                     <Move size={18} />
                   </button>
 
-                  {/* Annotate tab tools */}
-                  {activeTab === 'annotate' && (
+                  {mode === 'forms' ? (
                     <>
                       <button 
-                        className={`tool-btn ${activeTool === 'text' ? 'active' : ''}`} 
-                        onClick={() => setActiveTool('text')} 
-                        title="Add Text"
+                        className="tool-btn" 
+                        onClick={() => handleAddField('text')} 
+                        title="Add Text Field"
+                        style={{ fontSize: '0.8rem', padding: '0 0.5rem', width: 'auto', display: 'flex', gap: '0.2rem', alignItems: 'center' }}
                       >
-                        <Type size={18} />
+                        <Type size={16} /> Text
                       </button>
                       <button 
                         className="tool-btn" 
-                        onClick={() => fileInputRef.current?.click()} 
-                        title="Add Image"
+                        onClick={() => handleAddField('checkbox')} 
+                        title="Add Checkbox Field"
+                        style={{ fontSize: '0.8rem', padding: '0 0.5rem', width: 'auto', display: 'flex', gap: '0.2rem', alignItems: 'center' }}
                       >
-                        <ImageIcon size={18} />
-                        <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/*" style={{ display: 'none' }} />
+                        <FileCheck size={16} /> Checkbox
                       </button>
                       <button 
-                        className={`tool-btn ${activeTool === 'pencil' ? 'active' : ''}`} 
-                        onClick={() => setActiveTool('pencil')} 
-                        title="Draw Freehand"
+                        className="tool-btn" 
+                        onClick={() => handleAddField('dropdown')} 
+                        title="Add Dropdown Field"
+                        style={{ fontSize: '0.8rem', padding: '0 0.5rem', width: 'auto', display: 'flex', gap: '0.2rem', alignItems: 'center' }}
                       >
-                        <Pencil size={18} />
+                        <Columns size={16} /> Dropdown
                       </button>
                       <button 
-                        className={`tool-btn ${activeTool === 'shape-rect' ? 'active' : ''}`} 
-                        onClick={() => { setActiveTool('shape-rect'); addShape('rectangle'); }} 
-                        title="Add Rectangle"
+                        className="tool-btn" 
+                        onClick={() => handleAddField('radio')} 
+                        title="Add Radio Option"
+                        style={{ fontSize: '0.8rem', padding: '0 0.5rem', width: 'auto', display: 'flex', gap: '0.2rem', alignItems: 'center' }}
                       >
-                        <Square size={18} />
+                        <Circle size={16} /> Radio
                       </button>
                       <button 
-                        className={`tool-btn ${activeTool === 'shape-circle' ? 'active' : ''}`} 
-                        onClick={() => { setActiveTool('shape-circle'); addShape('circle'); }} 
-                        title="Add Circle"
+                        className="tool-btn" 
+                        onClick={() => handleAddField('date')} 
+                        title="Add Date Field"
+                        style={{ fontSize: '0.8rem', padding: '0 0.5rem', width: 'auto', display: 'flex', gap: '0.2rem', alignItems: 'center' }}
                       >
-                        <Circle size={18} />
-                      </button>
-                    </>
-                  )}
-
-                  {/* Edit tab tools */}
-                  {activeTab === 'edit' && (
-                    <>
-                      <button 
-                        className={`tool-btn ${activeTool === 'editText' ? 'active' : ''}`} 
-                        onClick={() => setActiveTool('editText')} 
-                        title="Edit Page Text"
-                      >
-                        <Edit3 size={18} />
-                      </button>
-                      <span className="section-divider" style={{ margin: '0 0.25rem' }}></span>
-
-                      {/* Sub-annotations group */}
-                      <button 
-                        className={`tool-btn ${activeTool === 'highlight' ? 'active' : ''}`} 
-                        onClick={() => setActiveTool('highlight')} 
-                        title="Highlight Text"
-                      >
-                        <Highlighter size={18} />
+                        <FileCheck size={16} /> Date
                       </button>
                       <button 
-                        className={`tool-btn ${activeTool === 'underline' ? 'active' : ''}`} 
-                        onClick={() => setActiveTool('underline')} 
-                        title="Underline Text"
+                        className="tool-btn" 
+                        onClick={() => handleAddField('signature')} 
+                        title="Add Signature Field"
+                        style={{ fontSize: '0.8rem', padding: '0 0.5rem', width: 'auto', display: 'flex', gap: '0.2rem', alignItems: 'center' }}
                       >
-                        <UnderlineIcon size={18} />
-                      </button>
-                      <button 
-                        className={`tool-btn ${activeTool === 'strikethrough' ? 'active' : ''}`} 
-                        onClick={() => setActiveTool('strikethrough')} 
-                        title="Through-line Text"
-                      >
-                        <Scissors size={18} />
-                      </button>
-                      <button 
-                        className={`tool-btn ${activeTool === 'note' ? 'active' : ''}`} 
-                        onClick={() => setActiveTool('note')} 
-                        title="Add Sticky Note"
-                      >
-                        <MessageSquare size={18} />
-                      </button>
-                      <button 
-                        className={`tool-btn ${activeTool === 'callout' ? 'active' : ''}`} 
-                        onClick={() => setActiveTool('callout')} 
-                        title="Add Callout Box"
-                      >
-                        <HelpCircle size={18} />
+                        <Pencil size={16} /> Signature
                       </button>
                       
-                      {/* Insert Image in edit mode */}
+                      <span className="section-divider"></span>
+                      
                       <button 
-                        className="tool-btn" 
-                        onClick={() => insertFileInputRef.current?.click()} 
-                        title="Insert Image Overlay"
+                        className="btn btn-secondary" 
+                        onClick={handleAutoDetectFields} 
+                        style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem', borderRadius: '6px' }}
                       >
-                        <Plus size={18} />
-                        <input type="file" ref={insertFileInputRef} onChange={handleImageUpload} accept="image/*" style={{ display: 'none' }} />
+                        <Sparkles size={14} style={{ marginRight: '0.25rem' }} /> Auto Scan Fields
                       </button>
+                    </>
+                  ) : (
+                    <>
+                      {/* Annotate tab tools */}
+                      {activeTab === 'annotate' && (
+                        <>
+                          <button 
+                            className={`tool-btn ${activeTool === 'text' ? 'active' : ''}`} 
+                            onClick={() => setActiveTool('text')} 
+                            title="Add Text"
+                          >
+                            <Type size={18} />
+                          </button>
+                          <button 
+                            className="tool-btn" 
+                            onClick={() => fileInputRef.current?.click()} 
+                            title="Add Image"
+                          >
+                            <ImageIcon size={18} />
+                            <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/*" style={{ display: 'none' }} />
+                          </button>
+                          <button 
+                            className={`tool-btn ${activeTool === 'pencil' ? 'active' : ''}`} 
+                            onClick={() => setActiveTool('pencil')} 
+                            title="Draw Freehand"
+                          >
+                            <Pencil size={18} />
+                          </button>
+                          <button 
+                            className={`tool-btn ${activeTool === 'shape-rect' ? 'active' : ''}`} 
+                            onClick={() => { setActiveTool('shape-rect'); addShape('rectangle'); }} 
+                            title="Add Rectangle"
+                          >
+                            <Square size={18} />
+                          </button>
+                          <button 
+                            className={`tool-btn ${activeTool === 'shape-circle' ? 'active' : ''}`} 
+                            onClick={() => { setActiveTool('shape-circle'); addShape('circle'); }} 
+                            title="Add Circle"
+                          >
+                            <Circle size={18} />
+                          </button>
+                        </>
+                      )}
 
-                      {/* Shapes */}
-                      <button 
-                        className="tool-btn" 
-                        onClick={() => addShape('rectangle')} 
-                        title="Insert Shape Rectangle"
-                      >
-                        <Square size={16} />
-                      </button>
-                      <button 
-                        className="tool-btn" 
-                        onClick={() => addShape('circle')} 
-                        title="Insert Shape Circle"
-                      >
-                        <Circle size={16} />
-                      </button>
-                      <button 
-                        className="tool-btn" 
-                        onClick={() => addShape('line')} 
-                        title="Insert Shape Line"
-                      >
-                        <GripVertical size={16} style={{ transform: 'rotate(90deg)' }} />
-                      </button>
+                      {/* Edit tab tools */}
+                      {activeTab === 'edit' && (
+                        <>
+                          <button 
+                            className={`tool-btn ${activeTool === 'editText' ? 'active' : ''}`} 
+                            onClick={() => setActiveTool('editText')} 
+                            title="Edit Page Text"
+                          >
+                            <Edit3 size={18} />
+                          </button>
+                          <span className="section-divider" style={{ margin: '0 0.25rem' }}></span>
+
+                          {/* Sub-annotations group */}
+                          <button 
+                            className={`tool-btn ${activeTool === 'highlight' ? 'active' : ''}`} 
+                            onClick={() => setActiveTool('highlight')} 
+                            title="Highlight Text"
+                          >
+                            <Highlighter size={18} />
+                          </button>
+                          <button 
+                            className={`tool-btn ${activeTool === 'underline' ? 'active' : ''}`} 
+                            onClick={() => setActiveTool('underline')} 
+                            title="Underline Text"
+                          >
+                            <UnderlineIcon size={18} />
+                          </button>
+                          <button 
+                            className={`tool-btn ${activeTool === 'strikethrough' ? 'active' : ''}`} 
+                            onClick={() => setActiveTool('strikethrough')} 
+                            title="Through-line Text"
+                          >
+                            <Scissors size={18} />
+                          </button>
+                          <button 
+                            className={`tool-btn ${activeTool === 'note' ? 'active' : ''}`} 
+                            onClick={() => setActiveTool('note')} 
+                            title="Add Sticky Note"
+                          >
+                            <MessageSquare size={18} />
+                          </button>
+                          <button 
+                            className={`tool-btn ${activeTool === 'callout' ? 'active' : ''}`} 
+                            onClick={() => setActiveTool('callout')} 
+                            title="Add Callout Box"
+                          >
+                            <HelpCircle size={18} />
+                          </button>
+                          
+                          {/* Insert Image in edit mode */}
+                          <button 
+                            className="tool-btn" 
+                            onClick={() => insertFileInputRef.current?.click()} 
+                            title="Insert Image Overlay"
+                          >
+                            <Plus size={18} />
+                            <input type="file" ref={insertFileInputRef} onChange={handleImageUpload} accept="image/*" style={{ display: 'none' }} />
+                          </button>
+
+                          {/* Shapes */}
+                          <button 
+                            className="tool-btn" 
+                            onClick={() => addShape('rectangle')} 
+                            title="Insert Shape Rectangle"
+                          >
+                            <Square size={16} />
+                          </button>
+                          <button 
+                            className="tool-btn" 
+                            onClick={() => addShape('circle')} 
+                            title="Insert Shape Circle"
+                          >
+                            <Circle size={16} />
+                          </button>
+                          <button 
+                            className="tool-btn" 
+                            onClick={() => addShape('line')} 
+                            title="Insert Shape Line"
+                          >
+                            <GripVertical size={16} style={{ transform: 'rotate(90deg)' }} />
+                          </button>
+                        </>
+                      )}
                     </>
                   )}
                 </div>
@@ -1908,7 +2494,7 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
                               top: `${ann.y}%`,
                               width: `${ann.width}%`,
                               height: `${ann.height}%`,
-                              border: isSelected ? '2px dashed var(--color-coral)' : (ann.locked ? 'none' : '1px transparent solid'),
+                              border: isSelected ? '2px dashed var(--color-green)' : (ann.locked ? 'none' : '1px transparent solid'),
                               cursor: ann.locked ? 'default' : (activeTool === 'hand' ? 'grab' : 'move'),
                               opacity: ann.opacity !== undefined ? ann.opacity : 1,
                               boxSizing: 'border-box',
@@ -2102,28 +2688,61 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
                               />
                             )}
 
+                            {/* Render Interactive Form Field */}
+                            {ann.type === ('formField' as any) && (
+                              <div
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                                  border: `2px solid ${isSelected ? 'var(--color-green)' : '#3b82f6'}`,
+                                  borderRadius: ann.fieldType === 'checkbox' ? '4px' : ann.fieldType === 'radio' ? '50%' : '6px',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  color: '#1e3a8a',
+                                  fontSize: '0.65rem',
+                                  fontWeight: 700,
+                                  fontFamily: 'monospace',
+                                  padding: '2px',
+                                  boxSizing: 'border-box',
+                                  overflow: 'hidden',
+                                  textAlign: 'center',
+                                  cursor: activeTool === 'hand' ? 'grab' : 'move'
+                                }}
+                              >
+                                <div style={{ fontSize: '0.55rem', opacity: 0.85, textTransform: 'uppercase' }}>
+                                  {ann.fieldType}
+                                </div>
+                                <div style={{ textOverflow: 'ellipsis', whiteSpace: 'nowrap', overflow: 'hidden', width: '100%' }}>
+                                  {ann.fieldName}
+                                </div>
+                              </div>
+                            )}
+
                             {/* Corner Resizing Handles */}
                             {isSelected && (
                               <>
                                 <div
                                   className="resize-handle"
                                   onMouseDown={(e) => handleMouseDown(e, ann, 'nw')}
-                                  style={{ position: 'absolute', top: '-4px', left: '-4px', width: '8px', height: '8px', background: 'var(--color-coral)', border: '1px solid white', cursor: 'nwse-resize', zIndex: 60 }}
+                                  style={{ position: 'absolute', top: '-4px', left: '-4px', width: '8px', height: '8px', background: 'var(--color-green)', border: '1px solid white', cursor: 'nwse-resize', zIndex: 60 }}
                                 />
                                 <div
                                   className="resize-handle"
                                   onMouseDown={(e) => handleMouseDown(e, ann, 'ne')}
-                                  style={{ position: 'absolute', top: '-4px', right: '-4px', width: '8px', height: '8px', background: 'var(--color-coral)', border: '1px solid white', cursor: 'nesw-resize', zIndex: 60 }}
+                                  style={{ position: 'absolute', top: '-4px', right: '-4px', width: '8px', height: '8px', background: 'var(--color-green)', border: '1px solid white', cursor: 'nesw-resize', zIndex: 60 }}
                                 />
                                 <div
                                   className="resize-handle"
                                   onMouseDown={(e) => handleMouseDown(e, ann, 'se')}
-                                  style={{ position: 'absolute', bottom: '-4px', right: '-4px', width: '8px', height: '8px', background: 'var(--color-coral)', border: '1px solid white', cursor: 'nwse-resize', zIndex: 60 }}
+                                  style={{ position: 'absolute', bottom: '-4px', right: '-4px', width: '8px', height: '8px', background: 'var(--color-green)', border: '1px solid white', cursor: 'nwse-resize', zIndex: 60 }}
                                 />
                                 <div
                                   className="resize-handle"
                                   onMouseDown={(e) => handleMouseDown(e, ann, 'sw')}
-                                  style={{ position: 'absolute', bottom: '-4px', left: '-4px', width: '8px', height: '8px', background: 'var(--color-coral)', border: '1px solid white', cursor: 'nesw-resize', zIndex: 60 }}
+                                  style={{ position: 'absolute', bottom: '-4px', left: '-4px', width: '8px', height: '8px', background: 'var(--color-green)', border: '1px solid white', cursor: 'nesw-resize', zIndex: 60 }}
                                 />
                               </>
                             )}
@@ -2564,6 +3183,101 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
                         </div>
                       </div>
                     )}
+
+                    {/* INTERACTIVE FORM FIELDS PANEL */}
+                    {selectedAnn.type === ('formField' as any) && (
+                      <div>
+                        <div className="property-title" style={{ borderBottom: '1px solid var(--color-border)', paddingBottom: '0.4rem', marginBottom: '0.75rem', color: 'var(--color-green)', fontWeight: 600 }}>Field Settings</div>
+
+                        <div className="prop-row">
+                          <div className="property-title">Field Name (Unique ID)</div>
+                          <input 
+                            type="text" 
+                            value={selectedAnn.fieldName || ''} 
+                            onChange={(e) => updateSelectedAnnotation({ fieldName: e.target.value })}
+                            className="prop-select-full"
+                            style={{ padding: '0.45rem', border: '1px solid var(--color-border)', borderRadius: '6px', width: '100%', fontSize: '0.8rem', background: 'var(--bg-card)', color: 'var(--text-primary)' }}
+                          />
+                        </div>
+
+                        <div className="prop-row">
+                          <div className="property-title">Input Type</div>
+                          <select 
+                            value={selectedAnn.fieldType || 'text'} 
+                            onChange={(e) => updateSelectedAnnotation({ fieldType: e.target.value as any })}
+                            className="prop-select-full"
+                            style={{ padding: '0.45rem', border: '1px solid var(--color-border)', borderRadius: '6px', width: '100%', fontSize: '0.8rem', background: 'var(--bg-card)', color: 'var(--text-primary)' }}
+                          >
+                            <option value="text">Text Box</option>
+                            <option value="checkbox">Checkbox</option>
+                            <option value="dropdown">Dropdown Options</option>
+                            <option value="radio">Radio Option</option>
+                            <option value="date">Date Picker</option>
+                            <option value="signature">Signature Area</option>
+                          </select>
+                        </div>
+
+                        <div className="prop-row">
+                          <div className="property-title">Default Value</div>
+                          <input 
+                            type="text" 
+                            value={selectedAnn.fieldValue || ''} 
+                            onChange={(e) => updateSelectedAnnotation({ fieldValue: e.target.value })}
+                            className="prop-select-full"
+                            style={{ padding: '0.45rem', border: '1px solid var(--color-border)', borderRadius: '6px', width: '100%', fontSize: '0.8rem', background: 'var(--bg-card)', color: 'var(--text-primary)' }}
+                          />
+                        </div>
+
+                        {selectedAnn.fieldType === 'dropdown' && (
+                          <div className="prop-row">
+                            <div className="property-title">Options (Comma separated)</div>
+                            <textarea
+                              value={selectedAnn.fieldOptions ? selectedAnn.fieldOptions.join(', ') : ''}
+                              onChange={(e) => updateSelectedAnnotation({ fieldOptions: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                              className="prop-select-full"
+                              style={{ padding: '0.45rem', border: '1px solid var(--color-border)', borderRadius: '6px', width: '100%', fontSize: '0.8rem', background: 'var(--bg-card)', color: 'var(--text-primary)', height: '70px', resize: 'vertical' }}
+                              placeholder="Option 1, Option 2, Option 3"
+                            />
+                          </div>
+                        )}
+
+                        {selectedAnn.fieldType === 'radio' && (
+                          <>
+                            <div className="prop-row">
+                              <div className="property-title">Radio Group Name</div>
+                              <input 
+                                type="text" 
+                                value={selectedAnn.fieldGroup || ''} 
+                                onChange={(e) => updateSelectedAnnotation({ fieldGroup: e.target.value })}
+                                className="prop-select-full"
+                                style={{ padding: '0.45rem', border: '1px solid var(--color-border)', borderRadius: '6px', width: '100%', fontSize: '0.8rem', background: 'var(--bg-card)', color: 'var(--text-primary)' }}
+                              />
+                            </div>
+                            <div className="prop-row">
+                              <div className="property-title">Radio Option Export Value</div>
+                              <input 
+                                type="text" 
+                                value={selectedAnn.fieldOptionName || ''} 
+                                onChange={(e) => updateSelectedAnnotation({ fieldOptionName: e.target.value })}
+                                className="prop-select-full"
+                                style={{ padding: '0.45rem', border: '1px solid var(--color-border)', borderRadius: '6px', width: '100%', fontSize: '0.8rem', background: 'var(--bg-card)', color: 'var(--text-primary)' }}
+                              />
+                            </div>
+                          </>
+                        )}
+
+                        <div className="prop-row" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+                          <input 
+                            type="checkbox" 
+                            id="fieldRequired"
+                            checked={!!selectedAnn.fieldRequired} 
+                            onChange={(e) => updateSelectedAnnotation({ fieldRequired: e.target.checked })}
+                            style={{ cursor: 'pointer' }}
+                          />
+                          <label htmlFor="fieldRequired" style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', cursor: 'pointer' }}>Required Field</label>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Sidebar Undo/Redo Navigation */}
@@ -2594,73 +3308,175 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
                 </div>
               ) : (
                 <>
-                  <h3 className="panel-title" style={{ borderBottom: '1px solid var(--color-border)', paddingBottom: '0.5rem' }}>
-                    Layers Management
+                  <h3 className="panel-title" style={{ borderBottom: '1px solid var(--color-border)', paddingBottom: '0.5rem', marginBottom: '1rem' }}>
+                    {mode === 'forms' ? 'Form Fields Manager' : 'Layers Management'}
                   </h3>
+
+                  {mode === 'forms' && (
+                    <div style={{ display: 'flex', border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden', padding: '2px', backgroundColor: 'var(--bg-primary)', marginBottom: '1rem' }}>
+                      <button 
+                        onClick={() => setFillMode('single')}
+                        style={{
+                          flex: 1,
+                          padding: '0.5rem',
+                          fontSize: '0.8rem',
+                          fontWeight: 600,
+                          border: 'none',
+                          borderRadius: '8px',
+                          backgroundColor: fillMode === 'single' ? 'var(--color-green)' : 'transparent',
+                          color: fillMode === 'single' ? '#ffffff' : 'var(--text-secondary)',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease'
+                        }}
+                      >
+                        Interactive Fill
+                      </button>
+                      <button 
+                        onClick={() => setFillMode('batch')}
+                        style={{
+                          flex: 1,
+                          padding: '0.5rem',
+                          fontSize: '0.8rem',
+                          fontWeight: 600,
+                          border: 'none',
+                          borderRadius: '8px',
+                          backgroundColor: fillMode === 'batch' ? 'var(--color-green)' : 'transparent',
+                          color: fillMode === 'batch' ? '#ffffff' : 'var(--text-secondary)',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease'
+                        }}
+                      >
+                        Batch Fill
+                      </button>
+                    </div>
+                  )}
                   
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', padding: '0.75rem', background: 'rgba(59, 130, 246, 0.04)', border: '1px solid rgba(59, 130, 246, 0.12)', borderRadius: '10px', lineHeight: 1.4 }}>
-                    Reorder layers using bring forward/backward buttons. Double click a text element on the canvas to edit.
-                  </div>
+                  {mode === 'forms' && fillMode === 'batch' ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', flex: 1, overflowY: 'auto' }}>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', padding: '0.75rem', background: 'rgba(16, 185, 129, 0.04)', border: '1px solid rgba(16, 185, 129, 0.12)', borderRadius: '10px', lineHeight: 1.4 }}>
+                        Upload a CSV or Excel spreadsheet to generate filled PDFs in bulk. Map form fields to column headers.
+                      </div>
 
-                  <div className="layers-list">
-                    {annotations
-                      .filter(ann => ann.page === pageIndex)
-                      .map((ann) => (
-                        <div 
-                          key={ann.id}
-                          className={`layer-item ${selectedId === ann.id ? 'active' : ''}`}
-                          onClick={() => setSelectedId(ann.id)}
-                        >
-                          <GripVertical size={14} style={{ color: 'var(--text-muted)' }} />
-                          
-                          <div className="layer-title">
-                            {ann.type === 'text' && `Text: "${ann.text?.slice(0, 15)}..."`}
-                            {ann.type === 'shape' && `Shape (${ann.shapeType})`}
-                            {ann.type === 'image' && `Image: ${ann.imageName?.slice(0, 15) || 'Overlay'}`}
-                            {ann.type === 'drawing' && 'Pencil sketch'}
-                            {ann.type === 'highlight' && 'Highlight area'}
-                            {ann.type === 'underline' && 'Text underline'}
-                            {ann.type === 'strikethrough' && 'Strikethrough line'}
-                            {ann.type === 'note' && `Note: "${ann.noteContent?.slice(0, 10)}..."`}
-                            {ann.type === 'callout' && `Callout: "${ann.text?.slice(0, 10)}..."`}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        <label style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-secondary)' }}>Data File (CSV or Excel)</label>
+                        <input 
+                          type="file" 
+                          accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel"
+                          onChange={handleDataFileChange}
+                          style={{
+                            width: '100%',
+                            padding: '0.5rem',
+                            fontSize: '0.8rem',
+                            border: '1px solid var(--color-border)',
+                            borderRadius: '8px',
+                            backgroundColor: 'var(--bg-primary)',
+                            color: 'var(--text-primary)',
+                            cursor: 'pointer'
+                          }}
+                        />
+                        {dataFile && (
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                            Selected: {dataFile.name}
                           </div>
+                        )}
+                      </div>
 
-                          <button 
-                            className="layer-action-btn"
-                            onClick={(e) => { e.stopPropagation(); bringToFront(ann.id); }}
-                            title="Bring forward"
-                          >
-                            <ChevronUp size={14} />
-                          </button>
-                          
-                          <button 
-                            className="layer-action-btn"
-                            onClick={(e) => { e.stopPropagation(); sendToBack(ann.id); }}
-                            title="Send backward"
-                          >
-                            <ChevronDown size={14} />
-                          </button>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', flex: 1, overflowY: 'auto', paddingRight: '0.25rem' }}>
+                        <h4 style={{ fontSize: '0.8rem', fontWeight: 700, margin: 0, textTransform: 'uppercase', color: 'var(--text-secondary)', borderBottom: '1px solid var(--color-border)', paddingBottom: '0.25rem' }}>Field Mapping</h4>
+                        {annotations.filter(ann => ann.type === 'formField').map(field => (
+                          <div key={field.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', padding: '0.5rem', background: 'var(--bg-primary)', borderRadius: '8px', border: '1px solid var(--color-border)' }}>
+                            <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+                              {field.fieldName} <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>({field.fieldType})</span>
+                            </div>
+                            <select 
+                              value={fieldMapping[field.fieldName || ''] || ''}
+                              onChange={(e) => setFieldMapping(prev => ({ ...prev, [field.fieldName || '']: e.target.value }))}
+                              style={{ width: '100%', fontSize: '0.8rem', padding: '0.25rem', borderRadius: '6px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--color-border)', color: 'var(--text-primary)', outline: 'none' }}
+                            >
+                              <option value="">-- Ignore (Don't Fill) --</option>
+                              {dataHeaders.map(h => (
+                                <option key={h} value={h}>{h}</option>
+                              ))}
+                            </select>
+                          </div>
+                        ))}
+                        {annotations.filter(ann => ann.type === 'formField').length === 0 && (
+                          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', margin: '2rem 0' }}>
+                            No interactive form fields found. Use the top "Auto Scan" button or manually add some fields.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', padding: '0.75rem', background: 'rgba(59, 130, 246, 0.04)', border: '1px solid rgba(59, 130, 246, 0.12)', borderRadius: '10px', lineHeight: 1.4 }}>
+                        {mode === 'forms' 
+                          ? 'Configure form field properties by clicking on them. Drag to move, or resize by dragging boundaries.' 
+                          : 'Reorder layers using bring forward/backward buttons. Double click a text element on the canvas to edit.'}
+                      </div>
 
-                          <button 
-                            className="layer-action-btn"
-                            onClick={(e) => { e.stopPropagation(); deleteAnnotation(ann.id); }}
-                            style={{ color: '#ef4444' }}
-                            title="Delete layer"
-                          >
-                            <Trash size={14} />
-                          </button>
-                        </div>
-                      ))}
+                      <div className="layers-list">
+                        {annotations
+                          .filter(ann => ann.page === pageIndex)
+                          .map((ann) => (
+                            <div 
+                              key={ann.id}
+                              className={`layer-item ${selectedId === ann.id ? 'active' : ''}`}
+                              onClick={() => setSelectedId(ann.id)}
+                            >
+                              <GripVertical size={14} style={{ color: 'var(--text-muted)' }} />
+                              
+                              <div className="layer-title">
+                                {ann.type === 'text' && `Text: "${ann.text?.slice(0, 15)}..."`}
+                                {ann.type === 'shape' && `Shape (${ann.shapeType})`}
+                                {ann.type === 'image' && `Image: ${ann.imageName?.slice(0, 15) || 'Overlay'}`}
+                                {ann.type === 'drawing' && 'Pencil sketch'}
+                                {ann.type === 'highlight' && 'Highlight area'}
+                                {ann.type === 'underline' && 'Text underline'}
+                                {ann.type === 'strikethrough' && 'Strikethrough line'}
+                                {ann.type === 'note' && `Note: "${ann.noteContent?.slice(0, 10)}..."`}
+                                {ann.type === 'callout' && `Callout: "${ann.text?.slice(0, 10)}..."`}
+                                {ann.type === ('formField' as any) && `Form Field: ${ann.fieldName || 'field'}`}
+                              </div>
 
-                    {annotations.filter(ann => ann.page === pageIndex).length === 0 && (
-                      <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', textAlign: 'center', marginTop: '2rem' }}>
-                        No layers on this page yet.
-                      </p>
-                    )}
-                  </div>
+                              <button 
+                                className="layer-action-btn"
+                                onClick={(e) => { e.stopPropagation(); bringToFront(ann.id); }}
+                                title="Bring forward"
+                              >
+                                <ChevronUp size={14} />
+                              </button>
+                              
+                              <button 
+                                className="layer-action-btn"
+                                onClick={(e) => { e.stopPropagation(); sendToBack(ann.id); }}
+                                title="Send backward"
+                              >
+                                <ChevronDown size={14} />
+                              </button>
+
+                              <button 
+                                className="layer-action-btn"
+                                onClick={(e) => { e.stopPropagation(); deleteAnnotation(ann.id); }}
+                                style={{ color: '#ef4444' }}
+                                title="Delete layer"
+                              >
+                                <Trash size={14} />
+                              </button>
+                            </div>
+                          ))}
+
+                        {annotations.filter(ann => ann.page === pageIndex).length === 0 && (
+                          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', textAlign: 'center', marginTop: '2rem' }}>
+                            No layers on this page yet.
+                          </p>
+                        )}
+                      </div>
+                    </>
+                  )}
 
                   {/* General Undo/Redo Navigation */}
-                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.2rem', marginTop: 'auto' }}>
                     <button 
                       className="prop-btn" 
                       style={{ flex: 1 }}
@@ -2681,14 +3497,58 @@ const EditPdf: React.FC<EditPdfProps> = ({ onBack }) => {
                     </button>
                   </div>
 
-                  <button 
-                    className="btn btn-primary"
-                    onClick={handleSaveChanges}
-                    disabled={isProcessing}
-                    style={{ width: '100%', gap: '0.6rem', padding: '0.85rem', borderRadius: '30px', backgroundColor: '#e11d48' }}
-                  >
-                    <Sparkles size={18} /> Save changes
-                  </button>
+                  {mode === 'edit' ? (
+                    <button 
+                      className="btn btn-primary"
+                      onClick={handleSaveChanges}
+                      disabled={isProcessing}
+                      style={{ width: '100%', gap: '0.6rem', padding: '0.85rem', borderRadius: '30px', backgroundColor: 'var(--color-green)', marginTop: '0.5rem' }}
+                    >
+                      <Sparkles size={18} /> Save changes
+                    </button>
+                  ) : fillMode === 'batch' ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', width: '100%', marginTop: '0.5rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        <input 
+                          type="checkbox" 
+                          id="flattenForm" 
+                          checked={flatten} 
+                          onChange={(e) => setFlatten(e.target.checked)} 
+                          style={{ cursor: 'pointer' }}
+                        />
+                        <label htmlFor="flattenForm" style={{ cursor: 'pointer', margin: 0 }}>Flatten Form Fields (burn values)</label>
+                      </div>
+                      <button 
+                        className="btn btn-primary"
+                        onClick={handleBatchFillForms}
+                        disabled={isProcessing || !dataFile || annotations.filter(ann => ann.type === 'formField').length === 0}
+                        style={{ width: '100%', gap: '0.6rem', padding: '0.85rem', borderRadius: '30px', backgroundColor: 'var(--color-green)' }}
+                      >
+                        <Sparkles size={18} /> Run Batch & Download
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', width: '100%', marginTop: '0.5rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        <input 
+                          type="checkbox" 
+                          id="flattenForm" 
+                          checked={flatten} 
+                          onChange={(e) => setFlatten(e.target.checked)} 
+                          style={{ cursor: 'pointer' }}
+                        />
+                        <label htmlFor="flattenForm" style={{ cursor: 'pointer', margin: 0 }}>Flatten Form Fields (burn values)</label>
+                      </div>
+                      <button 
+                        className="btn btn-primary"
+                        onClick={handleSaveForm}
+                        disabled={isProcessing}
+                        style={{ width: '100%', gap: '0.6rem', padding: '0.85rem', borderRadius: '30px', backgroundColor: 'var(--color-green)' }}
+                      >
+                        <Sparkles size={18} /> Save & Download Form
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>

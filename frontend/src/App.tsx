@@ -87,8 +87,9 @@ const App: React.FC = () => {
       case 'sign_pdf':
         return <SignPdf onBack={() => setActiveTool(null)} />;
       case 'edit_pdf':
+        return <EditPdf mode="edit" onBack={() => setActiveTool(null)} />;
       case 'pdf_forms':
-        return <EditPdf onBack={() => setActiveTool(null)} />;
+        return <EditPdf mode="forms" onBack={() => setActiveTool(null)} />;
       case 'crop_pdf':
         return <CropPdf onBack={() => setActiveTool(null)} />;
       case 'redact_pdf':

@@ -388,6 +388,7 @@ const Home: React.FC<HomeProps> = ({ onSelectTool }) => {
         {/* Search input with premium style */}
         <div style={{
           position: 'relative',
+          width: '100%',
           maxWidth: '500px',
           margin: '0 auto 1.5rem',
           display: 'flex',
@@ -402,6 +403,7 @@ const Home: React.FC<HomeProps> = ({ onSelectTool }) => {
             type="text"
             className="form-input"
             style={{
+              width: '100%',
               paddingLeft: '3rem',
               borderRadius: '30px',
               height: '52px',

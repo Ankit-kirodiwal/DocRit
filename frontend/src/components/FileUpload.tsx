@@ -35,13 +35,20 @@ const FileUpload: React.FC<FileUploadProps> = ({
     
     // Filter files based on accept criteria
     const filteredFiles = filesArray.filter(file => {
-      if (accept === 'application/pdf') {
-        return file.type === 'application/pdf' || file.name.endsWith('.pdf');
-      }
-      if (accept.includes('image/')) {
-        return file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(file.name);
-      }
-      return true;
+      if (!accept) return true;
+      const acceptedTypes = accept.split(',').map(t => t.trim());
+      return acceptedTypes.some(type => {
+        if (type === 'application/pdf') {
+          return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+        }
+        if (type.startsWith('image/')) {
+          if (type.endsWith('/*')) {
+            return file.type.startsWith('image/');
+          }
+          return file.type === type;
+        }
+        return file.type === type || file.name.toLowerCase().endsWith(type.toLowerCase());
+      });
     });
 
     if (multiple) {
@@ -77,7 +84,17 @@ const FileUpload: React.FC<FileUploadProps> = ({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
   };
 
-  const isImageAccept = accept.includes('image');
+  const isImageAcceptOnly = accept.includes('image') && !accept.includes('pdf');
+  const isPdfAcceptOnly = accept.includes('pdf') && !accept.includes('image');
+  
+  let uploadTitle = "Drag & Drop files here";
+  if (isImageAcceptOnly) {
+    uploadTitle = "Drag & Drop images here";
+  } else if (isPdfAcceptOnly) {
+    uploadTitle = "Drag & Drop PDF files here";
+  } else if (accept.includes('pdf') && accept.includes('image')) {
+    uploadTitle = "Drag & Drop PDF or image files here";
+  }
 
   return (
     <div style={{ width: '100%' }}>
@@ -90,7 +107,7 @@ const FileUpload: React.FC<FileUploadProps> = ({
         onClick={onButtonClick}
         style={{
           borderStyle: isDragActive ? 'solid' : 'dashed',
-          borderColor: isDragActive ? 'var(--color-coral)' : 'var(--color-border)',
+          borderColor: isDragActive ? 'var(--color-green)' : 'var(--color-border)',
         }}
       >
         <input
@@ -104,11 +121,11 @@ const FileUpload: React.FC<FileUploadProps> = ({
         />
         
         <div className="upload-icon">
-          {isImageAccept ? <ImageIcon size={48} /> : <UploadCloud size={48} />}
+          {isImageAcceptOnly ? <ImageIcon size={48} /> : <UploadCloud size={48} />}
         </div>
         
         <h3 className="upload-title">
-          Drag & Drop {isImageAccept ? 'images' : 'PDF files'} here
+          {uploadTitle}
         </h3>
         <p className="upload-subtitle">
           or click to browse from your computer

@@ -8,9 +8,11 @@ interface OcrProps {
   onBack: () => void;
 }
 
+type OcrFormat = 'pdf';
+
 const Ocr: React.FC<OcrProps> = ({ onBack }) => {
   const [files, setFiles] = useState<File[]>([]);
-  const [ocrType, setOcrType] = useState<'text' | 'pdf'>('text');
+  const [ocrFormat] = useState<OcrFormat>('pdf');
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
@@ -34,7 +36,7 @@ const Ocr: React.FC<OcrProps> = ({ onBack }) => {
 
     const formData = new FormData();
     formData.append('file', files[0]);
-    formData.append('ocrType', ocrType);
+    formData.append('ocrFormat', ocrFormat);
 
     try {
       setProgress(40);
@@ -47,8 +49,8 @@ const Ocr: React.FC<OcrProps> = ({ onBack }) => {
       });
 
       setProgress(90);
-      const outputType = ocrType === 'pdf' ? 'application/pdf' : 'text/plain';
-      const blob = new Blob([response.data], { type: outputType });
+      
+      const blob = new Blob([response.data], { type: 'application/pdf' });
       const url = window.URL.createObjectURL(blob);
       setDownloadUrl(url);
       setProgress(100);
@@ -59,6 +61,12 @@ const Ocr: React.FC<OcrProps> = ({ onBack }) => {
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const getDownloadFilename = () => {
+    const origName = files[0]?.name || 'document';
+    const base = origName.substring(0, origName.lastIndexOf('.')) || origName;
+    return `${base}_searchable.pdf`;
   };
 
   return (
@@ -111,17 +119,17 @@ const Ocr: React.FC<OcrProps> = ({ onBack }) => {
               <h3 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>OCR Completed Successfully!</h3>
               <a 
                 href={downloadUrl} 
-                download={ocrType === 'pdf' ? 'ocr_searchable.pdf' : 'extracted_text.txt'} 
+                download={getDownloadFilename()} 
                 className="btn btn-primary" 
                 style={{ textDecoration: 'none' }}
               >
-                <Download size={18} /> Download OCR File ({ocrType.toUpperCase()})
+                <Download size={18} /> Download OCR File ({ocrFormat.toUpperCase()})
               </a>
             </div>
           )}
 
           {isProcessing && (
-            <ProgressBar progress={progress} message="Performing optical character recognition. Reading pixel maps..." />
+            <ProgressBar progress={progress} message="Performing optical character recognition and layout structural extraction..." />
           )}
         </div>
       </div>
@@ -137,51 +145,28 @@ const Ocr: React.FC<OcrProps> = ({ onBack }) => {
             Output Format
           </label>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            
             <label style={{ 
               display: 'flex', 
               alignItems: 'center', 
               gap: '0.5rem', 
-              padding: '0.75rem', 
+              padding: '0.65rem 0.75rem', 
               borderRadius: '6px', 
               border: '1px solid var(--color-border)', 
-              background: ocrType === 'text' ? 'rgba(95, 131, 198, 0.1)' : 'transparent',
-              borderColor: ocrType === 'text' ? 'var(--color-primary)' : 'var(--color-border)',
-              cursor: 'pointer' 
+              background: 'rgba(238, 108, 77, 0.08)',
+              borderColor: 'var(--color-coral)',
+              cursor: 'default' 
             }}>
               <input 
                 type="radio" 
-                name="ocrType" 
-                value="text" 
-                checked={ocrType === 'text'} 
-                onChange={() => setOcrType('text')}
-              />
-              <div>
-                <strong style={{ fontSize: '0.9rem', display: 'block' }}>Plain Text (.txt)</strong>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Extract text without layout wrapper</span>
-              </div>
-            </label>
-
-            <label style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: '0.5rem', 
-              padding: '0.75rem', 
-              borderRadius: '6px', 
-              border: '1px solid var(--color-border)', 
-              background: ocrType === 'pdf' ? 'rgba(95, 131, 198, 0.1)' : 'transparent',
-              borderColor: ocrType === 'pdf' ? 'var(--color-primary)' : 'var(--color-border)',
-              cursor: 'pointer' 
-            }}>
-              <input 
-                type="radio" 
-                name="ocrType" 
+                name="ocrFormat" 
                 value="pdf" 
-                checked={ocrType === 'pdf'} 
-                onChange={() => setOcrType('pdf')}
+                checked={true} 
+                readOnly
               />
               <div>
-                <strong style={{ fontSize: '0.9rem', display: 'block' }}>Searchable PDF (.pdf)</strong>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Overlay searchable text onto the PDF</span>
+                <strong style={{ fontSize: '0.85rem', display: 'block' }}>Searchable PDF (.pdf)</strong>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Overlay searchable text layer onto original layout</span>
               </div>
             </label>
           </div>
