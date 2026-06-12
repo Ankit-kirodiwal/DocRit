@@ -87,14 +87,23 @@ const Unlock: React.FC<UnlockProps> = ({ onBack }) => {
               </div>
               <h3 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>PDF Unlocked Successfully!</h3>
               <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem' }}>Your decrypted PDF is ready to download.</p>
-              <a 
-                href={downloadUrl} 
-                download={`unlocked_${files[0]?.name || 'document.pdf'}`}
-                className="btn btn-primary"
-                style={{ textDecoration: 'none' }}
-              >
-                <Download size={18} /> Download Unlocked PDF
-              </a>
+              <div style={{ display: 'flex', gap: '1rem', width: '100%', justifyContent: 'center', marginTop: '1.5rem', flexWrap: 'wrap' }}>
+                <button 
+                  onClick={handleRemoveFile} 
+                  className="btn btn-secondary"
+                  style={{ borderRadius: '12px', padding: '0.85rem 1.75rem' }}
+                >
+                  Unlock Another File
+                </button>
+                <a 
+                  href={downloadUrl} 
+                  download={`unlocked_${files[0]?.name || 'document.pdf'}`}
+                  className="btn btn-primary" 
+                  style={{ textDecoration: 'none', borderRadius: '12px', padding: '0.85rem 2.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
+                >
+                  <Download size={18} /> Download Unlocked PDF
+                </a>
+              </div>
             </div>
           )}
 

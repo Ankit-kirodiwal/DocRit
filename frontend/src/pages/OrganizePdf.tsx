@@ -194,9 +194,23 @@ const OrganizePdf: React.FC<OrganizePdfProps> = ({ onBack }) => {
                 <FileCheck size={36} />
               </div>
               <h3 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>PDF Organized Successfully!</h3>
-              <a href={downloadUrl} download={`organized_${files[0]?.name || 'document.pdf'}`} className="btn btn-primary" style={{ textDecoration: 'none' }}>
-                <Download size={18} /> Download Organized PDF
-              </a>
+              <div style={{ display: 'flex', gap: '1rem', width: '100%', justifyContent: 'center', marginTop: '1.5rem', flexWrap: 'wrap' }}>
+                <button 
+                  onClick={handleRemoveFile} 
+                  className="btn btn-secondary"
+                  style={{ borderRadius: '12px', padding: '0.85rem 1.75rem' }}
+                >
+                  Organize Another File
+                </button>
+                <a 
+                  href={downloadUrl} 
+                  download={`organized_${files[0]?.name || 'document.pdf'}`}
+                  className="btn btn-primary" 
+                  style={{ textDecoration: 'none', borderRadius: '12px', padding: '0.85rem 2.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
+                >
+                  <Download size={18} /> Download Organized PDF
+                </a>
+              </div>
             </div>
           )}
 

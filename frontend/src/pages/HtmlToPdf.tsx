@@ -105,12 +105,24 @@ const HtmlToPdf: React.FC<HtmlToPdfProps> = ({ onBack }) => {
                 <FileCheck size={36} />
               </div>
               <h3 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>HTML Rendered successfully!</h3>
-              <a href={downloadUrl} download="html_webpage.pdf" className="btn btn-primary" style={{ textDecoration: 'none' }}>
-                <Download size={18} /> Download Webpage PDF
-              </a>
-              <div style={{ marginTop: '1.5rem' }}>
-                <button onClick={() => setDownloadUrl(null)} className="btn btn-secondary">Convert Another</button>
+              <div style={{ display: 'flex', gap: '1rem', width: '100%', justifyContent: 'center', marginTop: '1.5rem', flexWrap: 'wrap' }}>
+                <button 
+                  onClick={() => setDownloadUrl(null)} 
+                  className="btn btn-secondary"
+                  style={{ borderRadius: '12px', padding: '0.85rem 1.75rem' }}
+                >
+                  Convert Another HTML Page
+                </button>
+                <a 
+                  href={downloadUrl} 
+                  download="html_webpage.pdf"
+                  className="btn btn-primary" 
+                  style={{ textDecoration: 'none', borderRadius: '12px', padding: '0.85rem 2.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
+                >
+                  <Download size={18} /> Download Webpage PDF
+                </a>
               </div>
+              
             </div>
           )}
 

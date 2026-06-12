@@ -274,26 +274,23 @@ const ExtractPages: React.FC<ExtractPagesProps> = ({ onBack }) => {
                 >
                   <ArrowLeft size={20} />
                 </button>
+                <div style={{ display: 'flex', gap: '1rem', width: '100%', justifyContent: 'center', marginTop: '1.5rem', flexWrap: 'wrap' }}>
+                <button 
+                  onClick={handleRemoveFile} 
+                  className="btn btn-secondary"
+                  style={{ borderRadius: '12px', padding: '0.85rem 1.75rem' }}
+                >
+                  Extract Another File
+                </button>
                 <a 
                   href={downloadUrl} 
-                  download={`extracted_pages_${files[0]?.name || 'document.pdf'}`} 
+                  download={`extracted_pages_${files[0]?.name || 'document.pdf'}`}
                   className="btn btn-primary" 
-                  style={{ 
-                    textDecoration: 'none', 
-                    padding: '0.85rem 2.5rem', 
-                    borderRadius: '12px', 
-                    fontSize: '1.1rem', 
-                    fontWeight: 600, 
-                    display: 'inline-flex', 
-                    alignItems: 'center', 
-                    gap: '0.6rem',
-                    backgroundColor: 'var(--color-green)',
-                    borderColor: 'var(--color-green)',
-                    boxShadow: '0 4px 15px rgba(16, 185, 129, 0.25)'
-                  }}
+                  style={{ textDecoration: 'none', borderRadius: '12px', padding: '0.85rem 2.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
                 >
                   <Download size={18} /> Download PDF
                 </a>
+              </div>
               </div>
             </div>
           )}
