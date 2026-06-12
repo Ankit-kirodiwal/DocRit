@@ -15,7 +15,7 @@ const CropPdf: React.FC<CropPdfProps> = ({ onBack }) => {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
 
   // Crop Box Parameters
-  const [pageIndex, setPageIndex] = useState(0);
+  const [pageIndex, setPageIndex] = useState('');
   const [x, setX] = useState(0);
   const [y, setY] = useState(0);
   const [width, setWidth] = useState(400);
@@ -125,8 +125,8 @@ const CropPdf: React.FC<CropPdfProps> = ({ onBack }) => {
         
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
           <div>
-            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Page Index (0-indexed)</label>
-            <input type="number" className="form-control" value={pageIndex} onChange={(e) => setPageIndex(Number(e.target.value))} style={{ width: '100%' }} />
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Pages to crop (e.g. 1-3, 5 or blank for all)</label>
+            <input type="text" className="form-input" placeholder="e.g. 1-3, 5" value={pageIndex} onChange={(e) => setPageIndex(e.target.value)} style={{ width: '100%' }} />
           </div>
           <div>
             <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Left margin (X)</label>

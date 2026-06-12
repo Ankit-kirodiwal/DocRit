@@ -14,6 +14,7 @@ const PageNumbers: React.FC<PageNumbersProps> = ({ onBack }) => {
   const [format, setFormat] = useState('page-number');
   const [fontSize, setFontSize] = useState('12');
   const [startNumber, setStartNumber] = useState('1');
+  const [hasCoverPage, setHasCoverPage] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
@@ -42,6 +43,7 @@ const PageNumbers: React.FC<PageNumbersProps> = ({ onBack }) => {
     formData.append('format', format);
     formData.append('fontSize', fontSize);
     formData.append('startNumber', startNumber);
+    formData.append('hasCoverPage', String(hasCoverPage));
 
     try {
       setProgress(45);
@@ -178,6 +180,20 @@ const PageNumbers: React.FC<PageNumbersProps> = ({ onBack }) => {
             disabled={isProcessing || files.length === 0}
             min="1"
           />
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', cursor: 'pointer', marginTop: '0.5rem', marginBottom: '1.25rem', userSelect: 'none' }}>
+          <input
+            type="checkbox"
+            id="cover-page-checkbox"
+            checked={hasCoverPage}
+            onChange={(e) => setHasCoverPage(e.target.checked)}
+            disabled={isProcessing || files.length === 0}
+            style={{ accentColor: 'var(--color-green)' }}
+          />
+          <label htmlFor="cover-page-checkbox" style={{ cursor: 'pointer', color: 'var(--text-secondary)' }}>
+            Cover Page (skip numbering first page)
+          </label>
         </div>
 
         <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>

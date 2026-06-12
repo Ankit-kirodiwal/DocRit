@@ -739,7 +739,7 @@ export const watermarkPDF = async (req: Request, res: Response) => {
 export const addPageNumbers = async (req: Request, res: Response) => {
   try {
     const file = req.file;
-    const { position, format, fontSize, startNumber } = req.body;
+    const { position, format, fontSize, startNumber, hasCoverPage } = req.body;
 
     if (!file) {
       return res.status(400).json({ error: 'Please upload a PDF file.' });
@@ -753,12 +753,19 @@ export const addPageNumbers = async (req: Request, res: Response) => {
     const size = parseInt(fontSize || '12', 10);
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
+    const hasCover = hasCoverPage === 'true';
+
     for (let i = 0; i < totalPages; i++) {
+      if (hasCover && i === 0) {
+        continue;
+      }
+
       const page = pages[i];
-      const pageNumVal = startNum + i;
+      const pageNumVal = hasCover ? (startNum + i - 1) : (startNum + i);
       let text = `${pageNumVal}`;
       if (format === 'page-of') {
-        text = `${pageNumVal} of ${totalPages}`;
+        const adjustedTotal = hasCover ? (totalPages - 1) : totalPages;
+        text = `${pageNumVal} of ${adjustedTotal}`;
       }
 
       const { width, height } = page.getSize();
@@ -1089,19 +1096,26 @@ export const cropPDF = async (req: Request, res: Response) => {
 
     const pdfDoc = await PDFDocument.load(file.buffer);
     const pages = pdfDoc.getPages();
-    const pageIdx = parseInt(pageIndex || '0', 10);
     
-    if (pageIdx < 0 || pageIdx >= pages.length) {
-      return res.status(400).json({ error: 'Invalid page index.' });
+    let targetPageIndices: number[] = [];
+    if (pageIndex === undefined || pageIndex === null || String(pageIndex).trim() === '') {
+      targetPageIndices = pdfDoc.getPageIndices();
+    } else {
+      targetPageIndices = parseRanges(String(pageIndex), pages.length);
+      if (targetPageIndices.length === 0) {
+        return res.status(400).json({ error: 'Invalid page range specified.' });
+      }
     }
 
-    const page = pages[pageIdx];
     const px = parseFloat(x || '0');
     const py = parseFloat(y || '0');
     const pw = parseFloat(width || '400');
     const ph = parseFloat(height || '400');
 
-    page.setCropBox(px, py, pw, ph);
+    for (const idx of targetPageIndices) {
+      const page = pages[idx];
+      page.setCropBox(px, py, pw, ph);
+    }
 
     const pdfBytes = await pdfDoc.save();
     res.contentType('application/pdf');

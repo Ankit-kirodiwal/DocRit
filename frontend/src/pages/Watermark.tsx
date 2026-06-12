@@ -155,7 +155,7 @@ const Watermark: React.FC<WatermarkProps> = ({ onBack }) => {
             style={{ 
               flex: 1, 
               borderRadius: 0, 
-              backgroundColor: type === 'text' ? 'var(--color-coral)' : 'transparent',
+              backgroundColor: type === 'text' ? 'var(--color-green)' : 'transparent',
               color: type === 'text' ? 'white' : 'var(--text-primary)',
               boxShadow: 'none'
             }}
@@ -169,7 +169,7 @@ const Watermark: React.FC<WatermarkProps> = ({ onBack }) => {
             style={{ 
               flex: 1, 
               borderRadius: 0, 
-              backgroundColor: type === 'image' ? 'var(--color-coral)' : 'transparent',
+              backgroundColor: type === 'image' ? 'var(--color-green)' : 'transparent',
               color: type === 'image' ? 'white' : 'var(--text-primary)',
               boxShadow: 'none'
             }}
