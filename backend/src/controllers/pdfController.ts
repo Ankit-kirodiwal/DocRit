@@ -24,6 +24,17 @@ import { promisify } from "util";
 const execPromise = promisify(exec);
 const execFilePromise = promisify(execFile);
 
+const getWorkerScriptPath = (): string => {
+  let workerPath = path.join(__dirname, "../workers/conversion_worker.py");
+  if (!fs.existsSync(workerPath)) {
+    const srcPath = path.join(__dirname, "../../src/workers/conversion_worker.py");
+    if (fs.existsSync(srcPath)) {
+      workerPath = srcPath;
+    }
+  }
+  return workerPath;
+};
+
 // Helper to convert Office files to PDF using native Office (first) or LibreOffice Headless (as fallback)
 async function convertOfficeToPdf(
   inputBuffer: Buffer,
@@ -171,10 +182,7 @@ async function runPythonWorker(
     }
 
     // Path to the python script
-    const workerScriptPath = path.join(
-      __dirname,
-      "../workers/conversion_worker.py",
-    );
+    const workerScriptPath = getWorkerScriptPath();
     let cmd = `${pythonCmd} "${workerScriptPath}" --task ${task} --input "${tempInputPath}" --output "${tempOutputPath}"`;
     if (extraArg) {
       if (task === "ocr") {
@@ -239,10 +247,7 @@ async function runPythonWorkerAdvanced(
       }
     }
 
-    const workerScriptPath = path.join(
-      __dirname,
-      "../workers/conversion_worker.py",
-    );
+    const workerScriptPath = getWorkerScriptPath();
     let cmdArgs = [
       `"${workerScriptPath}"`,
       `--task ${task}`,
@@ -1294,10 +1299,7 @@ export const editPDF = async (req: Request, res: Response) => {
         }
       }
 
-      const workerScriptPath = path.join(
-        __dirname,
-        "../workers/conversion_worker.py",
-      );
+      const workerScriptPath = getWorkerScriptPath();
       const cmd = `${pythonCmd} "${workerScriptPath}" --task edit --input "${tempInputPath}" --output "${tempOutputPath}" --extra "${tempJsonPath}"`;
 
       console.log(`Executing edit: ${cmd}`);
