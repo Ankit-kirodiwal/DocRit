@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
-import { Sun, Moon, FileText, Menu, X } from 'lucide-react';
+import { Sun, Moon, Menu, X } from 'lucide-react';
+import logoLight from '../assets/logo-light.jpg';
+import logoDark from '../assets/logo-dark.jpg';
 
 interface HeaderProps {
   theme: 'light' | 'dark';
@@ -19,11 +21,15 @@ const Header: React.FC<HeaderProps> = ({ theme, toggleTheme, onHomeClick }) => {
     <>
       <header className="header-glass">
         <div className="brand-container" style={{ cursor: 'pointer' }} onClick={handleHomeClick}>
-          <div className="brand-logo">
-            <FileText size={28} style={{ color: 'var(--color-green)' }} />
-            <span>RITES</span>
-          </div>
-          <span className="brand-tagline">Doc Converter</span>
+          <img 
+            src={theme === 'light' ? logoLight : logoDark} 
+            alt="RITES Doc Converter" 
+            style={{ 
+              height: '42px', 
+              objectFit: 'contain',
+              display: 'block'
+            }} 
+          />
         </div>
 
         <nav className="desktop-nav">

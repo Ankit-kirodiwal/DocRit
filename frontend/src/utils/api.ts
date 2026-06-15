@@ -9,7 +9,7 @@ const getBaseURL = () => {
     const cleanUrl = envUrl.endsWith('/') ? envUrl.slice(0, -1) : envUrl;
     return `${cleanUrl}/api/pdf`;
   }
-  return `http://${window.location.hostname}:5000/api/pdf`;
+  return '/api/pdf';
 };
 
 const api = axios.create({
