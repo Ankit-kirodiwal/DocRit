@@ -21,8 +21,9 @@ import os from "os";
 import { exec, execFile } from "child_process";
 import { promisify } from "util";
 
-const execPromise = promisify(exec);
-const execFilePromise = promisify(execFile);
+const execPromise = (cmd: string, options?: any) => promisify(exec)(cmd, { windowsHide: true, ...options });
+const execFilePromise = (file: string, args: string[], options?: any) => promisify(execFile)(file, args, { windowsHide: true, ...options });
+
 
 const getWorkerScriptPath = (): string => {
   let workerPath = path.join(__dirname, "../workers/conversion_worker.py");
