@@ -165,111 +165,129 @@ def convert_pdf_to_docx(pdf_path, docx_path):
         doc = fitz.open(pdf_path)
         has_changes = False
         
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            
-            # Identify drawing blocks (clustered vector drawings)
-            drawings = page.get_drawings()
-            drawing_rects = []
-            for d in drawings:
-                r = d.get("rect")
-                if r and not r.is_empty:
-                    # Ignore large structural lines/frames
-                    if r.width > 350 or r.height > 350:
-                        continue
-                    drawing_rects.append(r)
+        # Skip preprocessing entirely for large documents (e.g. page count > 15) to maintain fast speed
+        if len(doc) <= 15:
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                
+                # Identify drawing blocks (clustered vector drawings)
+                drawings = page.get_drawings()
+                
+                # If there are too many drawings (e.g. > 100), the page is complex. 
+                # Doing N^2 clustering or rasterizing will be extremely slow. Skip drawings preprocessing on this page.
+                if len(drawings) > 100:
+                    continue
                     
-            # Cluster drawing rects
-            clusters = []
-            for r in drawing_rects:
-                merged = False
-                for idx, c in enumerate(clusters):
-                    test_c = fitz.Rect(c.x0 - 15, c.y0 - 15, c.x1 + 15, c.y1 + 15)
-                    if test_c.intersects(r):
-                        clusters[idx] = c | r
-                        merged = True
-                        break
-                if not merged:
-                    clusters.append(r)
-                    
-            changed = True
-            while changed:
-                changed = False
-                i = 0
-                while i < len(clusters):
-                    j = i + 1
-                    while j < len(clusters):
-                        test_c = fitz.Rect(clusters[i].x0 - 15, clusters[i].y0 - 15, clusters[i].x1 + 15, clusters[i].y1 + 15)
-                        if test_c.intersects(clusters[j]):
-                            clusters[i] = clusters[i] | clusters[j]
-                            clusters.pop(j)
-                            changed = True
-                        else:
-                            j += 1
-                    i += 1
-                    
-            # Get page dimensions and words to protect layout structures
-            words = page.get_text("words")
-            page_height = page.rect.height
-
-            # Detect tables on the page to avoid rasterizing them
-            table_rects = []
-            try:
-                tables = page.find_tables()
-                if tables:
-                    for t in tables:
-                        if hasattr(t, "bbox"):
-                            table_rects.append(fitz.Rect(t.bbox))
-            except Exception as table_err:
-                print(f"Table detection skipped: {table_err}")
-
-            # Filter clusters to get valid graphic blocks
-            graph_rects = []
-            for c in clusters:
-                c = c & page.rect
-                if c.width > 20 and c.height > 20:
-                    # 1. Skip header and footer zones (protects headers, footers, and page numbers)
-                    if c.y1 < 75 or c.y0 > (page_height - 75):
-                        continue
-
-                    # 2. Avoid rasterizing any graphics that overlap with tables
-                    is_table = False
-                    for t_rect in table_rects:
-                        if c.intersects(t_rect):
-                            is_table = True
-                            break
-                    if is_table:
-                        continue
-
-                    # 3. Avoid rasterizing background shapes/watermarks that overlap with body text
-                    # (Graphs only have short labels; body text has many characters)
-                    overlapping_words = [w for w in words if fitz.Rect(w[:4]).intersects(c)]
-                    total_char_len = sum(len(w[4]) for w in overlapping_words)
-                    if total_char_len > 120:
-                        continue
-
-                    paths_in_cluster = [r for r in drawing_rects if c.contains(r)]
-                    if len(paths_in_cluster) >= 5:
-                        graph_rects.append(c)
+                drawing_rects = []
+                for d in drawings:
+                    r = d.get("rect")
+                    if r and not r.is_empty:
+                        # Ignore large structural lines/frames
+                        if r.width > 350 or r.height > 350:
+                            continue
+                        drawing_rects.append(r)
                         
-            # Replace graphs with high-quality PNGs
-            for idx, g_rect in enumerate(graph_rects):
-                pix = page.get_pixmap(clip=g_rect, dpi=300)
-                graph_img_path = f"temp_pre_graph_{page_num}_{idx}_{os.getpid()}.png"
-                pix.save(graph_img_path)
-                
-                # Redact the vector drawings in this area
-                page.add_redact_annot(g_rect, fill=(1, 1, 1)) # fill with white
-                page.apply_redactions()
-                
-                # Insert the rasterized image back in
-                page.insert_image(g_rect, filename=graph_img_path)
-                has_changes = True
-                
+                # Cluster drawing rects
+                clusters = []
+                for r in drawing_rects:
+                    merged = False
+                    for idx, c in enumerate(clusters):
+                        test_c = fitz.Rect(c.x0 - 15, c.y0 - 15, c.x1 + 15, c.y1 + 15)
+                        if test_c.intersects(r):
+                            clusters[idx] = c | r
+                            merged = True
+                            break
+                    if not merged:
+                        clusters.append(r)
+                        
+                changed = True
+                while changed:
+                    changed = False
+                    i = 0
+                    while i < len(clusters):
+                        j = i + 1
+                        while j < len(clusters):
+                            test_c = fitz.Rect(clusters[i].x0 - 15, clusters[i].y0 - 15, clusters[i].x1 + 15, clusters[i].y1 + 15)
+                            if test_c.intersects(clusters[j]):
+                                clusters[i] = clusters[i] | clusters[j]
+                                clusters.pop(j)
+                                changed = True
+                            else:
+                                j += 1
+                        i += 1
+                        
+                # Get page dimensions and words to protect layout structures
+                words = page.get_text("words")
+                page_height = page.rect.height
+    
+                # Detect tables on the page to avoid rasterizing them
+                table_rects = []
                 try:
-                    os.remove(graph_img_path)
-                except Exception:
-                    pass
+                    tables = page.find_tables()
+                    if tables:
+                        for t in tables:
+                            if hasattr(t, "bbox"):
+                                table_rects.append(fitz.Rect(t.bbox))
+                except Exception as table_err:
+                    print(f"Table detection skipped: {table_err}")
+    
+                # Filter clusters to get valid graphic blocks
+                graph_rects = []
+                for c in clusters:
+                    c = c & page.rect
+                    if c.width > 20 and c.height > 20:
+                        # 1. Skip header and footer zones (protects headers, footers, and page numbers)
+                        if c.y1 < 75 or c.y0 > (page_height - 75):
+                            continue
+    
+                        # 2. Avoid rasterizing any graphics that overlap with tables
+                        is_table = False
+                        for t_rect in table_rects:
+                            if c.intersects(t_rect):
+                                is_table = True
+                                break
+                        if is_table:
+                            continue
+    
+                        # 3. Avoid rasterizing background shapes/watermarks that overlap with body text
+                        # (Graphs only have short labels; body text has many characters)
+                        overlapping_words = [w for w in words if fitz.Rect(w[:4]).intersects(c)]
+                        total_char_len = sum(len(w[4]) for w in overlapping_words)
+                        if total_char_len > 120:
+                            continue
+    
+                        paths_in_cluster = [r for r in drawing_rects if c.contains(r)]
+                        if len(paths_in_cluster) >= 5:
+                            graph_rects.append(c)
+                            
+                # Replace graphs with high-quality PNGs
+                if graph_rects:
+                    temp_paths = []
+                    # 1. Render pixmaps and save to temp files
+                    for idx, g_rect in enumerate(graph_rects):
+                        pix = page.get_pixmap(clip=g_rect, dpi=300)
+                        graph_img_path = f"temp_pre_graph_{page_num}_{idx}_{os.getpid()}.png"
+                        pix.save(graph_img_path)
+                        temp_paths.append((g_rect, graph_img_path))
+                    
+                    # 2. Add all redactions
+                    for g_rect in graph_rects:
+                        page.add_redact_annot(g_rect, fill=(1, 1, 1)) # fill with white
+                    
+                    # 3. Apply redactions ONCE per page (instead of in a nested loop)
+                    page.apply_redactions()
+                    
+                    # 4. Insert images back in and clean up temp files
+                    for g_rect, graph_img_path in temp_paths:
+                        if os.path.exists(graph_img_path):
+                            page.insert_image(g_rect, filename=graph_img_path)
+                            has_changes = True
+                            try:
+                                os.remove(graph_img_path)
+                            except Exception:
+                                pass
+        else:
+            print(f"Skipping vector preprocessing for large PDF document ({len(doc)} pages) to speed up conversion.")
                     
         if has_changes:
             doc.save(temp_pdf_path)
@@ -574,217 +592,220 @@ def convert_pdf_to_pptx(pdf_path, pptx_path):
     
     prs = Presentation()
     doc = fitz.open(pdf_path)
+    temp_doc = fitz.open(pdf_path)
     
-    if len(doc) > 0:
-        first_page = doc.load_page(0)
-        rect = first_page.rect
-        prs.slide_width = Inches(rect.width / 72.0)
-        prs.slide_height = Inches(rect.height / 72.0)
+    try:
+        if len(doc) > 0:
+            first_page = doc.load_page(0)
+            rect = first_page.rect
+            prs.slide_width = Inches(rect.width / 72.0)
+            prs.slide_height = Inches(rect.height / 72.0)
 
-    # Iterate through pages, adding background image and transparent editable text boxes
-    for page_num in range(len(doc)):
-        page = doc.load_page(page_num)
-        page_dict = page.get_text("dict")
-        
-        # Identify image blocks (type 1)
-        image_blocks = []
-        for block in page_dict.get("blocks", []):
-            if block.get("type") == 1:
-                image_blocks.append(block)
-                
-        # Identify drawing blocks (clustered vector drawings)
-        drawings = page.get_drawings()
-        drawing_rects = []
-        for d in drawings:
-            r = d.get("rect")
-            if r and not r.is_empty:
-                if r.width > page.rect.width * 0.95 and r.height > page.rect.height * 0.95:
-                    continue
-                drawing_rects.append(r)
-                
-        # Cluster drawing rects
-        clusters = []
-        for r in drawing_rects:
-            merged = False
-            for idx, c in enumerate(clusters):
-                test_c = fitz.Rect(c.x0 - 15, c.y0 - 15, c.x1 + 15, c.y1 + 15)
-                if test_c.intersects(r):
-                    clusters[idx] = c | r
-                    merged = True
-                    break
-            if not merged:
-                clusters.append(r)
-                
-        changed = True
-        while changed:
-            changed = False
-            i = 0
-            while i < len(clusters):
-                j = i + 1
-                while j < len(clusters):
-                    test_c = fitz.Rect(clusters[i].x0 - 15, clusters[i].y0 - 15, clusters[i].x1 + 15, clusters[i].y1 + 15)
-                    if test_c.intersects(clusters[j]):
-                        clusters[i] = clusters[i] | clusters[j]
-                        clusters.pop(j)
-                        changed = True
-                    else:
-                        j += 1
-                i += 1
-                
-        # Filter clusters to get valid graphic blocks
-        graph_rects = []
-        for c in clusters:
-            c = c & page.rect
-            if c.width > 20 and c.height > 20:
-                paths_in_cluster = [r for r in drawing_rects if c.contains(r)]
-                if len(paths_in_cluster) >= 5:
-                    graph_rects.append(c)
+        # Iterate through pages, adding background image and transparent editable text boxes
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            page_dict = page.get_text("dict")
+            
+            # Identify image blocks (type 1)
+            image_blocks = []
+            for block in page_dict.get("blocks", []):
+                if block.get("type") == 1:
+                    image_blocks.append(block)
+                    
+            # Identify drawing blocks (clustered vector drawings)
+            drawings = page.get_drawings()
+            drawing_rects = []
+            graph_rects = []
+            
+            if len(drawings) <= 100:
+                for d in drawings:
+                    r = d.get("rect")
+                    if r and not r.is_empty:
+                        if r.width > page.rect.width * 0.95 and r.height > page.rect.height * 0.95:
+                            continue
+                        drawing_rects.append(r)
+                        
+                # Cluster drawing rects
+                clusters = []
+                for r in drawing_rects:
+                    merged = False
+                    for idx, c in enumerate(clusters):
+                        test_c = fitz.Rect(c.x0 - 15, c.y0 - 15, c.x1 + 15, c.y1 + 15)
+                        if test_c.intersects(r):
+                            clusters[idx] = c | r
+                            merged = True
+                            break
+                    if not merged:
+                        clusters.append(r)
+                        
+                changed = True
+                while changed:
+                    changed = False
+                    i = 0
+                    while i < len(clusters):
+                        j = i + 1
+                        while j < len(clusters):
+                            test_c = fitz.Rect(clusters[i].x0 - 15, clusters[i].y0 - 15, clusters[i].x1 + 15, clusters[i].y1 + 15)
+                            if test_c.intersects(clusters[j]):
+                                clusters[i] = clusters[i] | clusters[j]
+                                clusters.pop(j)
+                                changed = True
+                            else:
+                                j += 1
+                        i += 1
+                        
+                # Filter clusters to get valid graphic blocks
+                for c in clusters:
+                    c = c & page.rect
+                    if c.width > 20 and c.height > 20:
+                        paths_in_cluster = [r for r in drawing_rects if c.contains(r)]
+                        if len(paths_in_cluster) >= 5:
+                            graph_rects.append(c)
 
-        # Create a temporary copy to redact text, images, and graphs, then render background
-        temp_doc = fitz.open(pdf_path)
-        temp_page = temp_doc.load_page(page_num)
-        
-        # Redact text
-        words = temp_page.get_text("words")
-        for w in words:
-            rect = fitz.Rect(w[:4])
-            temp_page.add_redact_annot(rect, fill=None)
+            # Create a temporary copy to redact text, images, and graphs, then render background
+            temp_page = temp_doc.load_page(page_num)
             
-        # Redact images
-        for img in image_blocks:
-            rect = fitz.Rect(img["bbox"])
-            temp_page.add_redact_annot(rect, fill=None)
+            # Redact text
+            words = temp_page.get_text("words")
+            for w in words:
+                rect = fitz.Rect(w[:4])
+                temp_page.add_redact_annot(rect, fill=None)
+                
+            # Redact images
+            for img in image_blocks:
+                rect = fitz.Rect(img["bbox"])
+                temp_page.add_redact_annot(rect, fill=None)
+                
+            # Redact graphs
+            for g_rect in graph_rects:
+                temp_page.add_redact_annot(g_rect, fill=None)
+                
+            temp_page.apply_redactions()
             
-        # Redact graphs
-        for g_rect in graph_rects:
-            temp_page.add_redact_annot(g_rect, fill=None)
+            # Render clean background image
+            pix = temp_page.get_pixmap(dpi=150)
+            bg_img_path = f"temp_bg_{page_num}_{os.getpid()}.png"
+            pix.save(bg_img_path)
             
-        temp_page.apply_redactions()
+            # Add a blank slide
+            blank_layout = prs.slide_layouts[6]
+            slide = prs.slides.add_slide(blank_layout)
+            
+            # Insert background image spanning the entire slide
+            slide.shapes.add_picture(bg_img_path, 0, 0, width=prs.slide_width, height=prs.slide_height)
+            
+            try:
+                os.remove(bg_img_path)
+            except Exception:
+                pass
+            
+            # Insert standard images as separate movable shapes
+            for idx, img in enumerate(image_blocks):
+                bbox = img["bbox"]
+                left = Inches(bbox[0] / 72.0)
+                top = Inches(bbox[1] / 72.0)
+                width = Inches((bbox[2] - bbox[0]) / 72.0)
+                height = Inches((bbox[3] - bbox[1]) / 72.0)
+                
+                img_bytes = img["image"]
+                img_ext = img["ext"]
+                img_path = f"temp_img_{page_num}_{idx}_{os.getpid()}.{img_ext}"
+                with open(img_path, "wb") as f:
+                    f.write(img_bytes)
+                    
+                try:
+                    slide.shapes.add_picture(img_path, left, top, width=width, height=height)
+                except Exception as e:
+                    print(f"Failed to insert image shape: {e}")
+                    
+                try:
+                    os.remove(img_path)
+                except Exception:
+                    pass
+                    
+            # Render and insert graph drawing blocks as separate movable shapes
+            for idx, g_rect in enumerate(graph_rects):
+                pix = page.get_pixmap(clip=g_rect, dpi=300)
+                graph_path = f"temp_graph_{page_num}_{idx}_{os.getpid()}.png"
+                pix.save(graph_path)
+                
+                left = Inches(g_rect.x0 / 72.0)
+                top = Inches(g_rect.y0 / 72.0)
+                width = Inches(g_rect.width / 72.0)
+                height = Inches(g_rect.height / 72.0)
+                
+                try:
+                    slide.shapes.add_picture(graph_path, left, top, width=width, height=height)
+                except Exception as e:
+                    print(f"Failed to insert graph shape: {e}")
+                    
+                try:
+                    os.remove(graph_path)
+                except Exception:
+                    pass
+            # Place text boxes on top of the background image
+            for block in page_dict.get("blocks", []):
+                if block.get("type") == 0:  # Text block
+                    for line in block.get("lines", []):
+                        l_bbox = line.get("bbox")
+                        spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
+                        if not spans:
+                            continue
+
+                        max_font_size = max([s.get("size", 12) for s in spans])
+
+                        # Calculate inches coordinates
+                        left = Inches(l_bbox[0] / 72.0)
+                        top = Inches(l_bbox[1] / 72.0)
+                        width = Inches(max(l_bbox[2] - l_bbox[0], max_font_size * 2.0) / 72.0)
+                        height = Inches(max(l_bbox[3] - l_bbox[1], max_font_size * 1.5) / 72.0)
+
+                        # Add transparent text box
+                        txBox = slide.shapes.add_textbox(left, top, width, height)
+                        tf = txBox.text_frame
+                        tf.word_wrap = False
+                        tf.margin_left = Inches(0.0)
+                        tf.margin_right = Inches(0.0)
+                        tf.margin_top = Inches(0.0)
+                        tf.margin_bottom = Inches(0.0)
+
+                        p = tf.paragraphs[0]
+                        p.alignment = PP_ALIGN.LEFT
+
+                        # Map rotation if the text line is tilted
+                        dx, dy = line.get("dir", (1.0, 0.0))
+                        angle = math.degrees(math.atan2(dy, dx))
+                        if angle < 0:
+                            angle += 360
+                        if abs(angle) > 0.01:
+                            txBox.rotation = angle
+
+                        # Add text spans with matching styles
+                        for span in spans:
+                            run = p.add_run()
+                            run.text = span.get("text", "")
+                            run.font.name = map_font(span.get("font"))
+                            run.font.size = Pt(span.get("size", 12))
+
+                            # Color
+                            color_val = span.get("color", 0)
+                            r = (color_val >> 16) & 255
+                            g = (color_val >> 8) & 255
+                            b = color_val & 255
+                            run.font.color.rgb = RGBColor(r, g, b)
+
+                            # Flags (Bold / Italic)
+                            flags = span.get("flags", 0)
+                            if flags & 2:
+                                run.font.italic = True
+                            if flags & 16:
+                                run.font.bold = True
         
-        # Render clean background image
-        pix = temp_page.get_pixmap(dpi=150)
-        bg_img_path = f"temp_bg_{page_num}_{os.getpid()}.png"
-        pix.save(bg_img_path)
-        
-        # Add a blank slide
-        blank_layout = prs.slide_layouts[6]
-        slide = prs.slides.add_slide(blank_layout)
-        
-        # Insert background image spanning the entire slide
-        slide.shapes.add_picture(bg_img_path, 0, 0, width=prs.slide_width, height=prs.slide_height)
-        
-        try:
-            os.remove(bg_img_path)
-        except Exception:
-            pass
+        prs.save(pptx_path)
+        print("PPTX conversion complete.")
+    finally:
         temp_doc.close()
-        
-        # Insert standard images as separate movable shapes
-        for idx, img in enumerate(image_blocks):
-            bbox = img["bbox"]
-            left = Inches(bbox[0] / 72.0)
-            top = Inches(bbox[1] / 72.0)
-            width = Inches((bbox[2] - bbox[0]) / 72.0)
-            height = Inches((bbox[3] - bbox[1]) / 72.0)
-            
-            img_bytes = img["image"]
-            img_ext = img["ext"]
-            img_path = f"temp_img_{page_num}_{idx}_{os.getpid()}.{img_ext}"
-            with open(img_path, "wb") as f:
-                f.write(img_bytes)
-                
-            try:
-                slide.shapes.add_picture(img_path, left, top, width=width, height=height)
-            except Exception as e:
-                print(f"Failed to insert image shape: {e}")
-                
-            try:
-                os.remove(img_path)
-            except Exception:
-                pass
-                
-        # Render and insert graph drawing blocks as separate movable shapes
-        for idx, g_rect in enumerate(graph_rects):
-            pix = page.get_pixmap(clip=g_rect, dpi=300)
-            graph_path = f"temp_graph_{page_num}_{idx}_{os.getpid()}.png"
-            pix.save(graph_path)
-            
-            left = Inches(g_rect.x0 / 72.0)
-            top = Inches(g_rect.y0 / 72.0)
-            width = Inches(g_rect.width / 72.0)
-            height = Inches(g_rect.height / 72.0)
-            
-            try:
-                slide.shapes.add_picture(graph_path, left, top, width=width, height=height)
-            except Exception as e:
-                print(f"Failed to insert graph shape: {e}")
-                
-            try:
-                os.remove(graph_path)
-            except Exception:
-                pass
-
-        # Place text boxes on top of the background image
-        for block in page_dict.get("blocks", []):
-            if block.get("type") == 0:  # Text block
-                for line in block.get("lines", []):
-                    l_bbox = line.get("bbox")
-                    spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
-                    if not spans:
-                        continue
-
-                    max_font_size = max([s.get("size", 12) for s in spans])
-
-                    # Calculate inches coordinates
-                    left = Inches(l_bbox[0] / 72.0)
-                    top = Inches(l_bbox[1] / 72.0)
-                    width = Inches(max(l_bbox[2] - l_bbox[0], max_font_size * 2.0) / 72.0)
-                    height = Inches(max(l_bbox[3] - l_bbox[1], max_font_size * 1.5) / 72.0)
-
-                    # Add transparent text box
-                    txBox = slide.shapes.add_textbox(left, top, width, height)
-                    tf = txBox.text_frame
-                    tf.word_wrap = False
-                    tf.margin_left = Inches(0.0)
-                    tf.margin_right = Inches(0.0)
-                    tf.margin_top = Inches(0.0)
-                    tf.margin_bottom = Inches(0.0)
-
-                    p = tf.paragraphs[0]
-                    p.alignment = PP_ALIGN.LEFT
-
-                    # Map rotation if the text line is tilted
-                    dx, dy = line.get("dir", (1.0, 0.0))
-                    angle = math.degrees(math.atan2(dy, dx))
-                    if angle < 0:
-                        angle += 360
-                    if abs(angle) > 0.01:
-                        txBox.rotation = angle
-
-                    # Add text spans with matching styles
-                    for span in spans:
-                        run = p.add_run()
-                        run.text = span.get("text", "")
-                        run.font.name = map_font(span.get("font"))
-                        run.font.size = Pt(span.get("size", 12))
-
-                        # Color
-                        color_val = span.get("color", 0)
-                        r = (color_val >> 16) & 255
-                        g = (color_val >> 8) & 255
-                        b = color_val & 255
-                        run.font.color.rgb = RGBColor(r, g, b)
-
-                        # Flags (Bold / Italic)
-                        flags = span.get("flags", 0)
-                        if flags & 2:
-                            run.font.italic = True
-                        if flags & 16:
-                            run.font.bold = True
-
-    prs.save(pptx_path)
-    doc.close()
-    print("PPTX conversion complete.")
+        doc.close()
 
 
 def perform_ocr(input_path, output_path, output_type):
@@ -1188,7 +1209,36 @@ def edit_pdf(input_path, output_path, meta_path):
             if key in locked_masks:
                 is_replacement = True
                 
+        # Low-level layout extraction context
+        original_text = ""
+        original_font = None
+        original_size = None
+        original_color = None
+        original_origin = None
+        
         if is_replacement:
+            # Locate the original text object intersecting with this rect to extract formatting
+            try:
+                page_dict = page.get_text("dict")
+                best_overlap = 0.0
+                for block in page_dict.get("blocks", []):
+                    if "lines" in block:
+                        for line in block["lines"]:
+                            for span in line["spans"]:
+                                span_rect = fitz.Rect(span["bbox"])
+                                intersection = rect & span_rect
+                                if not intersection.is_empty:
+                                    overlap_area = intersection.width * intersection.height
+                                    if overlap_area > best_overlap:
+                                        best_overlap = overlap_area
+                                        original_text = span["text"]
+                                        original_font = span["font"]
+                                        original_size = span["size"]
+                                        original_color = span["color"]
+                                        original_origin = span["origin"]
+            except Exception as e:
+                print(f"Error matching original text span: {e}")
+                
             # TRUE TEXT EDITING: Redact the original text region!
             page.add_redact_annot(rect, fill=(1, 1, 1))
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
@@ -1203,21 +1253,81 @@ def edit_pdf(input_path, output_path, meta_path):
                 page.draw_rect(rect, color=hex_to_rgb(bg_color), fill=hex_to_rgb(bg_color), width=0)
                 
             text = ann.get("text") or ""
-            font_size = ann.get("fontSize") or 12
-            font_name = get_font_name(ann.get("fontFamily"), ann.get("bold"), ann.get("italic"))
-            text_color = hex_to_rgb(ann.get("color"))
             
+            # Formatting preservation & overrides
+            font_size = ann.get("fontSize") or 12
+            if is_replacement and original_size and not ann.get("fontSizeChanged"):
+                font_size = original_size
+                
+            # Font family matching
+            font_family = ann.get("fontFamily")
+            font_name = None
+            if is_replacement and original_font and not ann.get("fontFamilyChanged"):
+                # Clean prefix of subset font (e.g. ABCDEF+Helvetica -> Helvetica)
+                font_name = original_font
+                if "+" in original_font:
+                    font_name = original_font.split("+")[1]
+            else:
+                font_name = get_font_name(font_family, ann.get("bold"), ann.get("italic"))
+                
+            # Text color resolution
+            text_color = hex_to_rgb(ann.get("color"))
+            if is_replacement and original_color is not None and not ann.get("colorChanged"):
+                r = (original_color >> 16) & 255
+                g = (original_color >> 8) & 255
+                b = original_color & 255
+                text_color = (r / 255.0, g / 255.0, b / 255.0)
+                
             align_map = {"left": 0, "center": 1, "right": 2}
             alignment = align_map.get(ann.get("alignment") or "left", 0)
             
-            page.insert_textbox(
-                rect,
-                text,
-                fontsize=font_size,
-                fontname=font_name,
-                color=text_color,
-                align=alignment
-            )
+            # Simple Reflow Engine: If text becomes longer, prevent layout break by adjusting size
+            if is_replacement and original_text and len(text) > len(original_text):
+                ratio = len(original_text) / len(text)
+                font_size = max(font_size * ratio, 6.0) # Downscale font size slightly so it fits
+                
+            # If we have the exact origin, draw it using insert_text for perfect 1-pixel accuracy
+            if is_replacement and original_origin:
+                origin_point = fitz.Point(original_origin[0], original_origin[1])
+                try:
+                    page.insert_text(
+                        origin_point,
+                        text,
+                        fontsize=font_size,
+                        fontname=font_name,
+                        color=text_color
+                    )
+                except Exception as insert_err:
+                    print(f"Fallback insert text due to: {insert_err}")
+                    # Fallback to insert_textbox if the font name causes errors (e.g., custom subset font issue)
+                    page.insert_textbox(
+                        rect,
+                        text,
+                        fontsize=font_size,
+                        fontname="helvetica",
+                        color=text_color,
+                        align=alignment
+                    )
+            else:
+                # Render using standard insert_textbox
+                try:
+                    page.insert_textbox(
+                        rect,
+                        text,
+                        fontsize=font_size,
+                        fontname=font_name,
+                        color=text_color,
+                        align=alignment
+                    )
+                except Exception:
+                    page.insert_textbox(
+                        rect,
+                        text,
+                        fontsize=font_size,
+                        fontname="helvetica",
+                        color=text_color,
+                        align=alignment
+                    )
             
             # Underline / Strikethrough
             if ann.get("underline") or ann.get("strikethrough"):
@@ -1238,7 +1348,21 @@ def edit_pdf(input_path, output_path, meta_path):
             if shape_type == "circle":
                 page.draw_ellipse(rect, color=border_color, fill=fill_color, width=border_width)
             elif shape_type == "line":
-                page.draw_line(fitz.Point(x0, y0), fitz.Point(x1, y1), color=border_color, width=border_width)
+                y_mid = (y0 + y1) / 2.0
+                page.draw_line(fitz.Point(x0, y_mid), fitz.Point(x1, y_mid), color=border_color, width=border_width)
+            elif shape_type == "arrow":
+                y_mid = (y0 + y1) / 2.0
+                arrow_w = 6 + border_width * 1.5
+                arrow_h = 4 + border_width
+                # Draw shaft
+                page.draw_line(fitz.Point(x0, y_mid), fitz.Point(max(x0, x1 - arrow_w), y_mid), color=border_color, width=border_width)
+                # Draw head
+                pts = [
+                    fitz.Point(x1, y_mid),
+                    fitz.Point(max(x0, x1 - arrow_w), y_mid - arrow_h),
+                    fitz.Point(max(x0, x1 - arrow_w), y_mid + arrow_h)
+                ]
+                page.draw_polygon(pts, color=border_color, fill=border_color, width=0)
             else: # rectangle
                 page.draw_rect(rect, color=border_color, fill=fill_color, width=border_width)
                 

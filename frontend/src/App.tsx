@@ -16,7 +16,6 @@ import OrganizePdf from './pages/OrganizePdf';
 import RemovePages from './pages/RemovePages';
 import ExtractPages from './pages/ExtractPages';
 import SignPdf from './pages/SignPdf';
-import EditPdf from './pages/EditPdf';
 import CropPdf from './pages/CropPdf';
 import RedactPdf from './pages/RedactPdf';
 import HtmlToPdf from './pages/HtmlToPdf';
@@ -86,10 +85,6 @@ const App: React.FC = () => {
         return <ExtractPages onBack={() => setActiveTool(null)} />;
       case 'sign_pdf':
         return <SignPdf onBack={() => setActiveTool(null)} />;
-      case 'edit_pdf':
-        return <EditPdf mode="edit" onBack={() => setActiveTool(null)} />;
-      case 'pdf_forms':
-        return <EditPdf mode="forms" onBack={() => setActiveTool(null)} />;
       case 'crop_pdf':
         return <CropPdf onBack={() => setActiveTool(null)} />;
       case 'redact_pdf':

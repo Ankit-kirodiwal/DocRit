@@ -160,7 +160,7 @@ const OrganizePdf: React.FC<OrganizePdfProps> = ({ onBack }) => {
                 {isLoadingPages ? (
                   <p style={{ color: 'var(--text-muted)' }}>Loading document pages preview...</p>
                 ) : (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '1.5rem', width: '100%', maxWidth: '800px', padding: '1rem', border: '1px solid var(--color-border)', borderRadius: '12px', background: 'rgba(255,255,255,0.05)', backdropFilter: 'blur(10px)', marginBottom: '2rem' }}>
+                  <div className="pages-preview-grid">
                     {pages.map((page, index) => (
                       <div key={index} style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', background: 'rgba(255,255,255,0.08)', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--color-border)' }}>
                         <div style={{ position: 'absolute', top: '0.25rem', right: '0.25rem', display: 'flex', gap: '0.2rem' }}>

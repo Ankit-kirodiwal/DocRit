@@ -201,7 +201,7 @@ const RemovePages: React.FC<RemovePagesProps> = ({ onBack }) => {
                       </span>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '1.5rem', width: '100%', maxWidth: '800px', padding: '1.5rem', border: '1px solid var(--color-border)', borderRadius: '12px', background: 'rgba(255,255,255,0.05)', backdropFilter: 'blur(10px)', marginBottom: '2rem' }}>
+                    <div className="pages-preview-grid">
                       {pages.map((page, index) => {
                         const isSelected = selectedPages.has(page.originalIndex);
                         return (

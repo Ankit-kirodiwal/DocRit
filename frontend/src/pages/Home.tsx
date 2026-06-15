@@ -24,8 +24,7 @@ import {
   FileImage,
   Files,
   EyeOff,
-  PenTool,
-  FormInput
+  PenTool
 } from 'lucide-react';
 
 interface ToolItem {
@@ -290,24 +289,6 @@ const Home: React.FC<HomeProps> = ({ onSelectTool }) => {
           name: 'Crop PDF',
           description: 'Trim canvas margins and define precise crop bounding boxes dynamically.',
           icon: <Crop size={15} style={{ strokeWidth: '2.2px' }} />,
-          iconColor: '#6b21a8',
-          iconBg: '#f5f3ff',
-          iconBgDark: 'rgba(139, 92, 246, 0.15)'
-        },
-        {
-          id: 'edit_pdf',
-          name: 'Edit PDF',
-          description: 'Overlay custom texts or shape layers on PDF documents inside the browser.',
-          icon: <Sparkles size={15} style={{ strokeWidth: '2.2px' }} />,
-          iconColor: '#6b21a8',
-          iconBg: '#f5f3ff',
-          iconBgDark: 'rgba(139, 92, 246, 0.15)'
-        },
-        {
-          id: 'pdf_forms',
-          name: 'PDF Forms',
-          description: 'Interactively fill forms, checkboxes, and text form control values completely.',
-          icon: <FormInput size={15} style={{ strokeWidth: '2.2px' }} />,
           iconColor: '#6b21a8',
           iconBg: '#f5f3ff',
           iconBgDark: 'rgba(139, 92, 246, 0.15)'
