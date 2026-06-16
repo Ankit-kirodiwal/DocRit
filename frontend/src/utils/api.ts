@@ -1,8 +1,8 @@
 import axios from 'axios';
 
-// Support VITE_API_URL environment variable for production deployments (e.g. Vercel, Netlify)
-// If VITE_API_URL is "https://api.docrit.com", baseURL becomes "https://api.docrit.com/api/pdf"
-// Otherwise, it falls back to the dynamic hostname on port 5000.
+// Support VITE_API_URL environment variable for custom production API endpoints
+// If VITE_API_URL is configured, baseURL uses that path.
+// Otherwise, it falls back to '/api/pdf' (which is reverse-proxied by IIS web.config).
 const getBaseURL = () => {
   const envUrl = (import.meta as any).env?.VITE_API_URL;
   if (envUrl) {
