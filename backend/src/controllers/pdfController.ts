@@ -21,14 +21,18 @@ import os from "os";
 import { exec, execFile } from "child_process";
 import { promisify } from "util";
 
-const execPromise = (cmd: string, options?: any) => promisify(exec)(cmd, { windowsHide: true, ...options });
-const execFilePromise = (file: string, args: string[], options?: any) => promisify(execFile)(file, args, { windowsHide: true, ...options });
-
+const execPromise = (cmd: string, options?: any) =>
+  promisify(exec)(cmd, { windowsHide: true, ...options });
+const execFilePromise = (file: string, args: string[], options?: any) =>
+  promisify(execFile)(file, args, { windowsHide: true, ...options });
 
 const getWorkerScriptPath = (): string => {
   let workerPath = path.join(__dirname, "../workers/conversion_worker.py");
   if (!fs.existsSync(workerPath)) {
-    const srcPath = path.join(__dirname, "../../src/workers/conversion_worker.py");
+    const srcPath = path.join(
+      __dirname,
+      "../../src/workers/conversion_worker.py",
+    );
     if (fs.existsSync(srcPath)) {
       workerPath = srcPath;
     }
@@ -455,12 +459,33 @@ export const mergePDFs = async (req: Request, res: Response) => {
     const mergedPdf = await PDFDocument.create();
 
     for (const file of files) {
-      const srcPdf = await PDFDocument.load(file.buffer);
-      const copiedPages = await mergedPdf.copyPages(
-        srcPdf,
-        srcPdf.getPageIndices(),
-      );
-      copiedPages.forEach((page) => mergedPdf.addPage(page));
+      let srcPdf;
+      try {
+        srcPdf = await PDFDocument.load(file.buffer);
+      } catch (err: any) {
+        console.error(`Error loading PDF file "${file.originalname}":`, err);
+        if (err.message && err.message.toLowerCase().includes("encrypt")) {
+          return res.status(400).json({
+            error: `The file "${file.originalname}" is password-protected or encrypted. Please unlock it before merging.`,
+          });
+        }
+        return res.status(400).json({
+          error: `Failed to load "${file.originalname}". The file might be corrupted or in an unsupported format.`,
+        });
+      }
+
+      try {
+        const copiedPages = await mergedPdf.copyPages(
+          srcPdf,
+          srcPdf.getPageIndices(),
+        );
+        copiedPages.forEach((page) => mergedPdf.addPage(page));
+      } catch (err: any) {
+        console.error(`Error copying pages from "${file.originalname}":`, err);
+        return res.status(400).json({
+          error: `Failed to copy pages from "${file.originalname}". The file may contain unsupported PDF elements.`,
+        });
+      }
     }
 
     const mergedPdfBytes = await mergedPdf.save();
@@ -511,12 +536,10 @@ export const splitPDF = async (req: Request, res: Response) => {
     }
 
     if (!splitMode) {
-      return res
-        .status(400)
-        .json({
-          error:
-            'Please specify splitMode (e.g. "custom", "fixed", "extract_all", "extract_select").',
-        });
+      return res.status(400).json({
+        error:
+          'Please specify splitMode (e.g. "custom", "fixed", "extract_all", "extract_select").',
+      });
     }
 
     // 1. Custom Range mode
@@ -728,11 +751,9 @@ export const rotatePDF = async (req: Request, res: Response) => {
       isNaN(rotateAngle) ||
       ![90, 180, 270, 360, -90, -180, -270].includes(rotateAngle)
     ) {
-      return res
-        .status(400)
-        .json({
-          error: "Invalid rotation angle. Choose 90, 180, or 270 degrees.",
-        });
+      return res.status(400).json({
+        error: "Invalid rotation angle. Choose 90, 180, or 270 degrees.",
+      });
     }
 
     const pdfDoc = await PDFDocument.load(file.buffer);
@@ -795,11 +816,9 @@ export const watermarkPDF = async (req: Request, res: Response) => {
       } else if (mime === "image/jpeg" || mime === "image/jpg") {
         embeddedImage = await pdfDoc.embedJpg(imageFile.buffer);
       } else {
-        return res
-          .status(400)
-          .json({
-            error: "Only PNG or JPEG images are supported for watermarks.",
-          });
+        return res.status(400).json({
+          error: "Only PNG or JPEG images are supported for watermarks.",
+        });
       }
     } else {
       pdfDoc.registerFontkit(fontkit);
@@ -2054,11 +2073,9 @@ export const batchFillForms = async (req: Request, res: Response) => {
     const flatten = req.body.flatten === "true" || req.body.flatten === true;
 
     if (!pdfFile || !dataFile) {
-      return res
-        .status(400)
-        .json({
-          error: "Please upload both a PDF template and a CSV/Excel data file.",
-        });
+      return res.status(400).json({
+        error: "Please upload both a PDF template and a CSV/Excel data file.",
+      });
     }
 
     const workbook = XLSX.read(dataFile.buffer, { type: "buffer" });
@@ -2169,11 +2186,9 @@ export const batchFillForms = async (req: Request, res: Response) => {
     return res.send(zipBuffer);
   } catch (error: any) {
     console.error("Error in batch fill forms:", error);
-    return res
-      .status(500)
-      .json({
-        error: error.message || "Failed to perform batch form filling.",
-      });
+    return res.status(500).json({
+      error: error.message || "Failed to perform batch form filling.",
+    });
   }
 };
 
