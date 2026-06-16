@@ -558,35 +558,7 @@ a {
 
 .tool-workspace > .file-remove-btn,
 .tool-workspace-header .file-remove-btn {
-  position: relative !important;
-  top: auto !important;
-  left: auto !important;
-  right: auto !important;
-  width: fit-content !important;
-  height: auto !important;
-  border-radius: 8px !important;
-  padding: 0.5rem 1rem !important;
-  display: flex !important;
-  align-items: center !important;
-  gap: 0.4rem !important;
-  align-self: flex-start !important;
-  margin-bottom: 0 !important; /* Managed by header margin now */
-  background-color: var(--bg-tertiary) !important;
-  border: 1px solid var(--color-border) !important;
-  color: var(--text-secondary) !important;
-  font-size: 0.9rem !important;
-  font-weight: 500 !important;
-  transition: all 0.2s ease !important;
-}
-
-.tool-workspace > .file-remove-btn {
-  margin-bottom: 1.5rem !important; /* Keep original margin if not in header */
-}
-
-.tool-workspace > .file-remove-btn:hover,
-.tool-workspace-header .file-remove-btn:hover {
-  background-color: var(--color-border) !important;
-  color: var(--text-primary) !important;
+  display: none !important;
 }
 
 /* Progress bar */

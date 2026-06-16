@@ -119,6 +119,7 @@ const App: React.FC = () => {
         theme={theme} 
         toggleTheme={toggleTheme} 
         onHomeClick={() => setActiveTool(null)} 
+        showBackToTools={activeTool !== null}
       />
       <main className="main-content">
         {renderActivePage()}

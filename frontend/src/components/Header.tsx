@@ -7,9 +7,10 @@ interface HeaderProps {
   theme: 'light' | 'dark';
   toggleTheme: () => void;
   onHomeClick: () => void;
+  showBackToTools: boolean;
 }
 
-const Header: React.FC<HeaderProps> = ({ theme, toggleTheme, onHomeClick }) => {
+const Header: React.FC<HeaderProps> = ({ theme, toggleTheme, onHomeClick, showBackToTools }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   const handleHomeClick = () => {
@@ -34,8 +35,11 @@ const Header: React.FC<HeaderProps> = ({ theme, toggleTheme, onHomeClick }) => {
 
         <nav className="desktop-nav">
           <ul className="nav-links">
-            <li className="nav-link" onClick={handleHomeClick}>Home</li>
-            <li className="nav-link"><a href="#tools" onClick={handleHomeClick}>All Tools</a></li>
+            {showBackToTools && (
+              <li className="nav-link" onClick={handleHomeClick} style={{ cursor: 'pointer' }}>
+                Back to Tools
+              </li>
+            )}
           </ul>
         </nav>
 
@@ -91,40 +95,24 @@ const Header: React.FC<HeaderProps> = ({ theme, toggleTheme, onHomeClick }) => {
           gap: '1rem',
           animation: 'slideDownMenu 0.25s ease-out'
         }}>
-          <div 
-            onClick={handleHomeClick} 
-            style={{ 
-              fontWeight: 600, 
-              padding: '0.75rem 1rem', 
-              borderRadius: '8px', 
-              cursor: 'pointer', 
-              color: 'var(--text-primary)', 
-              background: 'rgba(255,255,255,0.05)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}
-          >
-            Home
-          </div>
-          <a 
-            href="#tools" 
-            onClick={handleHomeClick} 
-            style={{ 
-              fontWeight: 600, 
-              padding: '0.75rem 1rem', 
-              borderRadius: '8px', 
-              cursor: 'pointer', 
-              color: 'var(--text-primary)', 
-              background: 'rgba(255,255,255,0.05)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              textDecoration: 'none'
-            }}
-          >
-            All Tools
-          </a>
+          {showBackToTools && (
+            <div 
+              onClick={handleHomeClick} 
+              style={{ 
+                fontWeight: 600, 
+                padding: '0.75rem 1rem', 
+                borderRadius: '8px', 
+                cursor: 'pointer', 
+                color: 'var(--text-primary)', 
+                background: 'rgba(255,255,255,0.05)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}
+            >
+              Back to Tools
+            </div>
+          )}
         </div>
       )}
     </>
