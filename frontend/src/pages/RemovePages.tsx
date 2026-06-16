@@ -258,27 +258,7 @@ const RemovePages: React.FC<RemovePagesProps> = ({ onBack }) => {
               </div>
               <h3 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>Pages Removed Successfully!</h3>
               
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem', marginTop: '1.5rem' }}>
-                <button 
-                  onClick={handleRemoveFile} 
-                  style={{ 
-                    width: '46px', 
-                    height: '46px', 
-                    borderRadius: '50%', 
-                    backgroundColor: '#3f4254', 
-                    border: 'none', 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    justifyContent: 'center', 
-                    color: '#ffffff', 
-                    cursor: 'pointer', 
-                    transition: 'all 0.2s ease'
-                  }} 
-                  title="Upload another PDF"
-                >
-                  <ArrowLeft size={20} />
-                </button>
-                <div style={{ display: 'flex', gap: '1rem', width: '100%', justifyContent: 'center', marginTop: '1.5rem', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '1rem', width: '100%', justifyContent: 'center', marginTop: '1.5rem', flexWrap: 'wrap' }}>
                 <button 
                   onClick={handleRemoveFile} 
                   className="btn btn-secondary"
@@ -294,7 +274,6 @@ const RemovePages: React.FC<RemovePagesProps> = ({ onBack }) => {
                 >
                   <Download size={18} /> Download PDF
                 </a>
-              </div>
               </div>
             </div>
           )}

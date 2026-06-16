@@ -129,33 +129,18 @@ const Compress: React.FC<CompressProps> = ({ onBack }) => {
                 PDFs have been compressed!
               </h3>
               
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem', marginBottom: '2.5rem' }}>
+              <div style={{ display: 'flex', gap: '1rem', width: '100%', justifyContent: 'center', marginBottom: '2.5rem', flexWrap: 'wrap' }}>
                 <button 
                   onClick={handleRemoveFile} 
-                  style={{ 
-                    width: '46px', 
-                    height: '46px', 
-                    borderRadius: '50%', 
-                    backgroundColor: '#3f4254', 
-                    border: 'none', 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    justifyContent: 'center', 
-                    color: '#ffffff', 
-                    cursor: 'pointer', 
-                    transition: 'all 0.2s ease',
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
-                  }} 
-                  title="Upload another PDF"
-                  onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
-                  onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                  className="btn btn-secondary"
+                  style={{ borderRadius: '12px', padding: '0.85rem 1.75rem' }}
                 >
-                  <ArrowLeft size={20} />
+                  Compress Another File
                 </button>
                 <a 
                   href={downloadUrl} 
                   download={`compressed_${files[0]?.name || 'document.pdf'}`}
-                  className="btn"
+                  className="btn btn-primary" 
                   style={{ 
                     textDecoration: 'none', 
                     padding: '0.85rem 2.5rem', 

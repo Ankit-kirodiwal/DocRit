@@ -434,17 +434,16 @@ const Home: React.FC<HomeProps> = ({ onSelectTool }) => {
         {/* Extra Secure Agency Banner */}
         <div className="agency-secure-banner">
           <div className="agency-secure-banner-content">
-            <h4>Sovereign & Confidential Local Processing</h4>
+            <h4>RITES Limited Secure Document Processing</h4>
             <p>
-              Designed exclusively for private agencies where client briefs, patient logs, and financial records 
-              must be safeguarded. Zero files are uploaded to any external server — keeping data entirely pristine, compliant, and sovereign.
+              Tailored specifically for RITES Limited to safeguard engineering briefs, project designs, and corporate records. 
+              Zero files are uploaded to external networks — ensuring absolute confidentiality, compliance, and complete data sovereignty.
             </p>
           </div>
           <div className="agency-secure-banner-badge">
-            <span className="label">Processing Mode</span>
             <span className="value">
               <span className="value-dot"></span>
-              100% Local Sandbox
+              Secure Corporate Network
             </span>
           </div>
         </div>

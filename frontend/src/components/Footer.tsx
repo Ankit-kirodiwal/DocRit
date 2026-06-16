@@ -4,7 +4,7 @@ const Footer: React.FC = () => {
   return (
     <footer className="footer-glass">
       <div className="container">
-        <p>&copy; {new Date().getFullYear()} RITES Document Converter &reg; - Your fully functional PDF Editor. Inspired by iLovePDF.</p>
+        <p>&copy; {new Date().getFullYear()} RITES Document Converter &reg;</p>
       </div>
     </footer>
   );
