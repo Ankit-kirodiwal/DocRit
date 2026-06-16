@@ -21,7 +21,6 @@ import RedactPdf from './pages/RedactPdf';
 import HtmlToPdf from './pages/HtmlToPdf';
 import RepairPdf from './pages/RepairPdf';
 import ComparePdf from './pages/ComparePdf';
-import PdfToPdfa from './pages/PdfToPdfa';
 import WordToPdf from './pages/WordToPdf';
 import PowerpointToPdf from './pages/PowerpointToPdf';
 import ExcelToPdf from './pages/ExcelToPdf';
@@ -95,8 +94,6 @@ const App: React.FC = () => {
         return <RepairPdf onBack={() => setActiveTool(null)} />;
       case 'compare_pdf':
         return <ComparePdf onBack={() => setActiveTool(null)} />;
-      case 'pdf_to_pdfa':
-        return <PdfToPdfa onBack={() => setActiveTool(null)} />;
       case 'word_to_pdf':
         return <WordToPdf onBack={() => setActiveTool(null)} />;
       case 'powerpoint_to_pdf':

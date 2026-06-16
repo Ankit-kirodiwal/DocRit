@@ -33,7 +33,6 @@ router.post('/redact', upload.single('file'), pdfController.redactPDF);
 router.post('/html-to-pdf', pdfController.htmlToPDF);
 router.post('/repair', upload.single('file'), pdfController.repairPDF);
 router.post('/compare', upload.array('files'), pdfController.comparePDF);
-router.post('/pdf-to-pdfa', upload.single('file'), pdfController.pdfToPDFA);
 router.post('/word-to-pdf', upload.single('file'), pdfController.wordToPDF);
 router.post('/powerpoint-to-pdf', upload.single('file'), pdfController.powerpointToPDF);
 router.post('/excel-to-pdf', upload.single('file'), pdfController.excelToPDF);

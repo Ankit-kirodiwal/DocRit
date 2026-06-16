@@ -241,15 +241,6 @@ const Home: React.FC<HomeProps> = ({ onSelectTool }) => {
           iconColor: '#c2410c',
           iconBg: '#fff7ed',
           iconBgDark: 'rgba(249, 115, 22, 0.15)'
-        },
-        {
-          id: 'pdf_to_pdfa',
-          name: 'PDF to PDF/A',
-          description: 'Convert your PDFs safely to standard archive-compliant ISO PDF/A formats.',
-          icon: <Files size={15} style={{ strokeWidth: '2.2px' }} />,
-          iconColor: '#c2410c',
-          iconBg: '#fff7ed',
-          iconBgDark: 'rgba(249, 115, 22, 0.15)'
         }
       ]
     },

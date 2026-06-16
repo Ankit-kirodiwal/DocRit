@@ -1607,35 +1607,6 @@ export const comparePDF = async (req: Request, res: Response) => {
   }
 };
 
-// 9. PDF to PDF/A
-export const pdfToPDFA = async (req: Request, res: Response) => {
-  try {
-    const file = req.file;
-    if (!file) {
-      return res.status(400).json({ error: "Please upload a PDF file." });
-    }
-
-    const pdfDoc = await PDFDocument.load(file.buffer);
-
-    pdfDoc.setTitle("PDF/A Compliant Document");
-    pdfDoc.setSubject("PDF/A-1b ISO Standard Archive");
-    pdfDoc.setKeywords(["PDFA", "Archive", "ISO 19005"]);
-
-    const pdfBytes = await pdfDoc.save();
-    res.contentType("application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      'attachment; filename="pdfa_compliant.pdf"',
-    );
-    return res.send(Buffer.from(pdfBytes));
-  } catch (error: any) {
-    console.error("Error converting PDF to PDF/A:", error);
-    return res
-      .status(500)
-      .json({ error: error.message || "Failed to convert PDF to PDF/A." });
-  }
-};
-
 // 10. Word to PDF
 export const wordToPDF = async (req: Request, res: Response) => {
   try {
