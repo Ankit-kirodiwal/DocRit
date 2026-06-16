@@ -1494,7 +1494,7 @@ def repair_pdf(input_path, output_path):
             modified = True
             
         if modified:
-            temp_patched = input_path + f".patched_{os.getpid()}"
+            temp_patched = input_path + f"_patched_{os.getpid()}.pdf"
             with open(temp_patched, 'wb') as f:
                 f.write(data)
             input_path_to_open = temp_patched
