@@ -22,7 +22,6 @@ import {
   Wrench,
   Crop,
   FileImage,
-  Files,
   EyeOff,
   PenTool
 } from 'lucide-react';
