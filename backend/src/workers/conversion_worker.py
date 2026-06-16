@@ -1531,13 +1531,46 @@ def repair_pdf(input_path, output_path):
         if page_count == 0:
             raise ValueError("Repaired document contains 0 pages.")
     except Exception as rep_err:
-        report["errors_found"].append(f"Fatal structural recovery exception: {rep_err}")
-        # Fall back to copy
+        report["errors_found"].append(f"MuPDF Engine structural recovery exception: {rep_err}")
+        pypdfium_success = False
+        
         try:
-            shutil.copyfile(input_path, output_path)
-        except Exception:
-            pass
-        report["remaining_warnings"].append(f"Multi-stage recovery failed to reconstruct structures: {rep_err}")
+            import pypdfium2 as pdfium
+            print("MuPDF failed. Attempting pypdfium2 structural rebuild...")
+            pdf = pdfium.PdfDocument(input_path_to_open)
+            page_count = len(pdf)
+            if page_count > 0:
+                pdf.save(output_path)
+                pdf.close()
+                report["errors_repaired"].append(f"Reconstructed page tree and objects using PDFium engine ({page_count} pages recovered).")
+                pypdfium_success = True
+                
+                # Try to clean/optimize the PDFium output with PyMuPDF
+                try:
+                    doc = fitz.open(output_path)
+                    doc.save(
+                        output_path,
+                        garbage=4,
+                        clean=True,
+                        deflate=True
+                    )
+                    doc.close()
+                    report["errors_repaired"].append("Optimized rebuilt structure with PyMuPDF garbage collection.")
+                except Exception as opt_err:
+                    print(f"Skipping PyMuPDF post-optimization: {opt_err}")
+            else:
+                pdf.close()
+                raise ValueError("PDFium engine also found 0 pages.")
+        except Exception as pdfium_err:
+            report["errors_found"].append(f"PDFium Engine recovery exception: {pdfium_err}")
+            
+        if not pypdfium_success:
+            # Fall back to copy
+            try:
+                shutil.copyfile(input_path, output_path)
+            except Exception:
+                pass
+            report["remaining_warnings"].append(f"Multi-stage recovery failed to reconstruct structures: {rep_err}")
     finally:
         if temp_patched and os.path.exists(temp_patched):
             try:
